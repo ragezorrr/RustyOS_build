@@ -25,11 +25,9 @@ use crate::text::TextRenderer;
 use crate::theme::Theme;
 
 pub const PANEL_H: i32 = 30;
-pub const DOCK_H: i32 = 68;
 pub const DOCK_MARGIN: i32 = 4; // Dock sits almost flush with the bottom edge, macOS style
 pub const DOCK_HEADROOM: i32 = 34; // Extra room above dock for tooltips and icon magnification
 const ICON: i32 = 48;
-const ICON_GAP: i32 = 14;
 const DOCK_PAD: i32 = 14;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,7 +137,6 @@ pub struct Hit {
 
 struct CachedBuffer {
     buffer: MemoryRenderBuffer,
-    size: (i32, i32),
 }
 
 #[derive(Clone, PartialEq)]
@@ -261,7 +258,6 @@ impl Shell {
         if self.panel_sig.as_ref() != Some(&panel_sig) {
             self.panel = Some(CachedBuffer {
                 buffer: self.build_panel(width, &app_name, app_category, minute, network),
-                size: (width, PANEL_H),
             });
             self.panel_sig = Some(panel_sig);
         }
@@ -325,7 +321,6 @@ impl Shell {
                     bouncing,
                     dock_cfg,
                 ),
-                size: (dock_w, dock_h + DOCK_HEADROOM),
             });
             self.dock_sig = Some(dock_sig);
         }
@@ -338,7 +333,6 @@ impl Shell {
         if self.wallpaper_sig.as_ref() != Some(&wallpaper_sig) {
             self.wallpaper = Some(CachedBuffer {
                 buffer: self.build_wallpaper(width, height),
-                size: (width, height),
             });
             self.wallpaper_sig = Some(wallpaper_sig);
         }
@@ -1300,14 +1294,6 @@ pub fn dock_rect_dynamic(
     (x, y, w, h)
 }
 
-pub fn dock_width_with_size(icon_size: i32) -> i32 {
-    dock_width_dynamic(icon_size, 0, 0)
-}
-
-pub fn dock_width() -> i32 {
-    dock_width_with_size(ICON)
-}
-
 /// Top-left corner and size of the dock.
 pub fn dock_rect_with_size(screen_w: i32, screen_h: i32, icon_size: i32) -> (i32, i32, i32, i32) {
     dock_rect_dynamic(screen_w, screen_h, icon_size, 0, 0)
@@ -1503,42 +1489,6 @@ fn draw_apple(pm: &mut Pixmap, cx: f32, cy: f32, color: [u8; 4]) {
         let mut paint = Paint::default();
         paint.set_color_rgba8(color[0], color[1], color[2], color[3]);
         pm.fill_path(&leaf, &paint, FillRule::Winding, SkTransform::identity(), None);
-    }
-}
-
-fn draw_sun(pm: &mut Pixmap, cx: f32, cy: f32, color: [u8; 4]) {
-    stroke_circle(pm, cx, cy, 4.2, color, 1.6);
-    for i in 0..8 {
-        let a = i as f32 * std::f32::consts::TAU / 8.0;
-        let (s, c) = a.sin_cos();
-        let x0 = cx + c * 6.6;
-        let y0 = cy + s * 6.6;
-        let x1 = cx + c * 8.4;
-        let y1 = cy + s * 8.4;
-        let mut pb = PathBuilder::new();
-        pb.move_to(x0, y0);
-        pb.line_to(x1, y1);
-        if let Some(p) = pb.finish() {
-            let mut paint = Paint::default();
-            paint.set_color_rgba8(color[0], color[1], color[2], color[3]);
-            let stroke = Stroke {
-                width: 1.6,
-                line_cap: LineCap::Round,
-                ..Default::default()
-            };
-            pm.stroke_path(&p, &paint, &stroke, SkTransform::identity(), None);
-        }
-    }
-}
-
-fn draw_moon(pm: &mut Pixmap, cx: f32, cy: f32, color: [u8; 4]) {
-    let mut pb = PathBuilder::new();
-    pb.push_circle(cx, cy, 7.0);
-    pb.push_circle(cx + 3.8, cy - 2.2, 6.0);
-    if let Some(p) = pb.finish() {
-        let mut paint = Paint::default();
-        paint.set_color_rgba8(color[0], color[1], color[2], color[3]);
-        pm.fill_path(&p, &paint, FillRule::EvenOdd, SkTransform::identity(), None);
     }
 }
 

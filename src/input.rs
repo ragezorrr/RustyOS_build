@@ -905,20 +905,4 @@ impl Aqua {
             _ => {}
         }
     }
-
-    fn cycle_focus(&mut self) {
-        let windows: Vec<_> = self.space.elements().cloned().collect();
-        if windows.is_empty() {
-            return;
-        }
-        let next = match &self.focused_window {
-            Some(current) => {
-                let idx = windows.iter().position(|w| w == current).unwrap_or(0);
-                windows[(idx + 1) % windows.len()].clone()
-            }
-            None => windows[0].clone(),
-        };
-        self.space.raise_element(&next, true);
-        self.focus_window(&next);
-    }
 }

@@ -1,7 +1,9 @@
 use std::{
+    cell::RefCell,
     collections::HashMap,
     os::unix::io::OwnedFd,
     path::PathBuf,
+    rc::Rc,
     time::Duration,
 };
 
@@ -45,6 +47,12 @@ pub struct DrmOutput {
     pub surface: GbmBufferedSurface<GbmAllocator<DrmDeviceFd>, ()>,
     pub output: Output,
     pub damage_tracker: OutputDamageTracker,
+    pub frame_pending: bool,
+}
+
+struct UdevBackend {
+    outputs: HashMap<crtc::Handle, DrmOutput>,
+    renderer: GlesRenderer,
 }
 
 pub fn run_udev(
@@ -86,7 +94,7 @@ pub fn run_udev(
 
     let egl_display = unsafe { EGLDisplay::new(gbm_device.clone())? };
     let egl_context = EGLContext::new(&egl_display)?;
-    let mut renderer = unsafe { GlesRenderer::new(egl_context)? };
+    let renderer = unsafe { GlesRenderer::new(egl_context)? };
 
     let mut outputs: HashMap<crtc::Handle, DrmOutput> = HashMap::new();
 
@@ -140,6 +148,7 @@ pub fn run_udev(
                             surface: gbm_surface,
                             output,
                             damage_tracker,
+                            frame_pending: false,
                         },
                     );
                 }
@@ -153,6 +162,8 @@ pub fn run_udev(
 
     std::env::set_var("WAYLAND_DISPLAY", &data.state.socket_name);
 
+    let backend = Rc::new(RefCell::new(UdevBackend { outputs, renderer }));
+
     // Register event sources
     let handle = event_loop.handle();
 
@@ -162,22 +173,48 @@ pub fn run_udev(
     })?;
 
     // Session events (VT switch activate/pause)
-    handle.insert_source(notifier, |event, _, _data| {
+    let backend_session = backend.clone();
+    handle.insert_source(notifier, move |event, _, _data| {
         match event {
             SessionEvent::PauseSession => {
                 tracing::info!("Session paused (VT switched away)");
             }
             SessionEvent::ActivateSession => {
                 tracing::info!("Session activated (VT switched back)");
+                if let Ok(mut b) = backend_session.try_borrow_mut() {
+                    for drm_out in b.outputs.values_mut() {
+                        drm_out.frame_pending = false;
+                        drm_out.surface.reset_buffers();
+                    }
+                }
             }
         }
     })?;
 
     // DRM page-flip events
-    handle.insert_source(drm_notifier, move |event, _, _data| {
+    let backend_drm = backend.clone();
+    handle.insert_source(drm_notifier, move |event, _, data| {
         match event {
             DrmEvent::VBlank(crtc) => {
-                tracing::trace!(?crtc, "VBlank event");
+                if let Ok(mut b) = backend_drm.try_borrow_mut() {
+                    if let Some(drm_out) = b.outputs.get_mut(&crtc) {
+                        let _ = drm_out.surface.frame_submitted();
+                        drm_out.frame_pending = false;
+
+                        if drm_out.output.current_mode().is_some() {
+                            let time = data.state.start_time.elapsed();
+                            let output = drm_out.output.clone();
+                            data.state.space.elements().for_each(|window| {
+                                window.send_frame(
+                                    &output,
+                                    time,
+                                    Some(Duration::ZERO),
+                                    |_, _| Some(output.clone()),
+                                );
+                            });
+                        }
+                    }
+                }
             }
             DrmEvent::Error(err) => {
                 tracing::error!(?err, "DRM event error");
@@ -186,6 +223,7 @@ pub fn run_udev(
     })?;
 
     // 60 FPS Render loop timer
+    let backend_render = backend.clone();
     let timer = Timer::immediate();
     handle.insert_source(timer, move |_deadline, _, data| {
         let now = std::time::Instant::now();
@@ -242,30 +280,27 @@ pub fn run_udev(
         }
 
         // 3. Render all outputs
-        for drm_out in outputs.values_mut() {
-            if let Ok((mut dmabuf, _age)) = drm_out.surface.next_buffer() {
-                if let Ok(mut target) = renderer.bind(&mut dmabuf) {
-                    let _ = crate::render::render(
-                        &mut data.state,
-                        &mut renderer,
-                        &mut target,
-                        &drm_out.output,
-                        &mut drm_out.damage_tracker,
-                    );
+        if let Ok(mut b) = backend_render.try_borrow_mut() {
+            let UdevBackend { outputs, renderer } = &mut *b;
+            for drm_out in outputs.values_mut() {
+                if drm_out.frame_pending {
+                    continue;
                 }
-                let _ = drm_out.surface.queue_buffer(None, None, ());
-                let _ = drm_out.surface.frame_submitted();
-            }
 
-            if drm_out.output.current_mode().is_some() {
-                data.state.space.elements().for_each(|window| {
-                    window.send_frame(
-                        &drm_out.output,
-                        data.state.start_time.elapsed(),
-                        Some(Duration::ZERO),
-                        |_, _| Some(drm_out.output.clone()),
-                    )
-                });
+                if let Ok((mut dmabuf, _age)) = drm_out.surface.next_buffer() {
+                    if let Ok(mut target) = renderer.bind(&mut dmabuf) {
+                        let _ = crate::render::render(
+                            &mut data.state,
+                            renderer,
+                            &mut target,
+                            &drm_out.output,
+                            &mut drm_out.damage_tracker,
+                        );
+                    }
+                    if drm_out.surface.queue_buffer(None, None, ()).is_ok() {
+                        drm_out.frame_pending = true;
+                    }
+                }
             }
         }
 

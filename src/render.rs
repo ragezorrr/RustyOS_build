@@ -123,12 +123,28 @@ pub fn window_app_id(window: &Window) -> Option<String> {
 }
 
 pub fn window_is_csd(window: &Window) -> bool {
+    if let Some(toplevel) = window.toplevel() {
+        if toplevel.current_state().decoration_mode
+            == Some(smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode::ClientSide)
+        {
+            return true;
+        }
+    }
     let app_id = window_app_id(window).unwrap_or_default().to_lowercase();
     let title = window_title(window).unwrap_or_default().to_lowercase();
     app_id.contains("cursor")
         || app_id.contains("code")
+        || app_id.contains("chrome")
+        || app_id.contains("chromium")
+        || app_id.contains("brave")
+        || app_id.contains("firefox")
+        || app_id.contains("edge")
         || title.contains("cursor")
         || title.contains("visual studio code")
+        || title.contains("google chrome")
+        || title.contains("chromium")
+        || title.contains("brave")
+        || title.contains("mozilla firefox")
 }
 
 pub fn window_titlebar_h(window: &Window) -> i32 {

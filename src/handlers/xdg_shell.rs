@@ -75,20 +75,32 @@ impl XdgShellHandler for Aqua {
     }
 
     fn move_request(&mut self, surface: ToplevelSurface, seat: wl_seat::WlSeat, serial: Serial) {
-        let seat = Seat::from_resource(&seat).unwrap();
+        let seat = match Seat::from_resource(&seat) {
+            Some(s) => s,
+            None => return,
+        };
 
         let wl_surface = surface.wl_surface();
 
         if let Some(start_data) = check_grab(&seat, wl_surface, serial) {
-            let pointer = seat.get_pointer().unwrap();
+            let pointer = match seat.get_pointer() {
+                Some(p) => p,
+                None => return,
+            };
 
-            let window = self
+            let window = match self
                 .space
                 .elements()
-                .find(|w| w.toplevel().unwrap().wl_surface() == wl_surface)
-                .unwrap()
-                .clone();
-            let initial_window_location = self.space.element_location(&window).unwrap();
+                .find(|w| w.toplevel().map(|t| t.wl_surface() == wl_surface).unwrap_or(false))
+                .cloned()
+            {
+                Some(w) => w,
+                None => return,
+            };
+            let initial_window_location = match self.space.element_location(&window) {
+                Some(loc) => loc,
+                None => return,
+            };
 
             let grab = MoveSurfaceGrab {
                 start_data,
@@ -107,20 +119,32 @@ impl XdgShellHandler for Aqua {
         serial: Serial,
         edges: xdg_toplevel::ResizeEdge,
     ) {
-        let seat = Seat::from_resource(&seat).unwrap();
+        let seat = match Seat::from_resource(&seat) {
+            Some(s) => s,
+            None => return,
+        };
 
         let wl_surface = surface.wl_surface();
 
         if let Some(start_data) = check_grab(&seat, wl_surface, serial) {
-            let pointer = seat.get_pointer().unwrap();
+            let pointer = match seat.get_pointer() {
+                Some(p) => p,
+                None => return,
+            };
 
-            let window = self
+            let window = match self
                 .space
                 .elements()
-                .find(|w| w.toplevel().unwrap().wl_surface() == wl_surface)
-                .unwrap()
-                .clone();
-            let initial_window_location = self.space.element_location(&window).unwrap();
+                .find(|w| w.toplevel().map(|t| t.wl_surface() == wl_surface).unwrap_or(false))
+                .cloned()
+            {
+                Some(w) => w,
+                None => return,
+            };
+            let initial_window_location = match self.space.element_location(&window) {
+                Some(loc) => loc,
+                None => return,
+            };
             let initial_window_size = window.geometry().size;
 
             surface.with_pending_state(|state| {
@@ -150,15 +174,40 @@ delegate_xdg_shell!(Aqua);
 
 impl XdgDecorationHandler for Aqua {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
+        let is_csd = with_states(toplevel.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|data| data.lock().ok())
+                .and_then(|attrs| attrs.app_id.clone())
+        })
+        .map(|id| {
+            let lower = id.to_lowercase();
+            lower.contains("cursor")
+                || lower.contains("code")
+                || lower.contains("chrome")
+                || lower.contains("chromium")
+                || lower.contains("brave")
+                || lower.contains("firefox")
+                || lower.contains("edge")
+        })
+        .unwrap_or(false);
+
+        let mode = if is_csd {
+            DecorationMode::ClientSide
+        } else {
+            DecorationMode::ServerSide
+        };
+
         toplevel.with_pending_state(|state| {
-            state.decoration_mode = Some(DecorationMode::ServerSide);
+            state.decoration_mode = Some(mode);
         });
         toplevel.send_configure();
     }
 
-    fn request_mode(&mut self, toplevel: ToplevelSurface, _mode: DecorationMode) {
+    fn request_mode(&mut self, toplevel: ToplevelSurface, mode: DecorationMode) {
         toplevel.with_pending_state(|state| {
-            state.decoration_mode = Some(DecorationMode::ServerSide);
+            state.decoration_mode = Some(mode);
         });
         toplevel.send_configure();
     }
@@ -201,21 +250,22 @@ pub fn handle_commit(popups: &mut PopupManager, space: &Space<Window>, surface: 
     // Handle toplevel commits.
     if let Some(window) = space
         .elements()
-        .find(|w| w.toplevel().unwrap().wl_surface() == surface)
+        .find(|w| w.toplevel().map(|t| t.wl_surface() == surface).unwrap_or(false))
         .cloned()
     {
         let initial_configure_sent = with_states(surface, |states| {
             states
                 .data_map
                 .get::<XdgToplevelSurfaceData>()
-                .unwrap()
-                .lock()
-                .unwrap()
-                .initial_configure_sent
+                .and_then(|data| data.lock().ok())
+                .map(|attrs| attrs.initial_configure_sent)
+                .unwrap_or(false)
         });
 
         if !initial_configure_sent {
-            window.toplevel().unwrap().send_configure();
+            if let Some(toplevel) = window.toplevel() {
+                toplevel.send_configure();
+            }
         }
     }
 
@@ -225,9 +275,7 @@ pub fn handle_commit(popups: &mut PopupManager, space: &Space<Window>, surface: 
         match popup {
             PopupKind::Xdg(ref xdg) => {
                 if !xdg.is_initial_configure_sent() {
-                    // NOTE: This should never fail as the initial configure is always
-                    // allowed.
-                    xdg.send_configure().expect("initial configure failed");
+                    let _ = xdg.send_configure();
                 }
             }
             PopupKind::InputMethod(ref _input_method) => {}
