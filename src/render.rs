@@ -682,7 +682,7 @@ pub fn render(
             _ => {
                 // Default macOS style arrow cursor (cached)
                 let cursor_buf = state.deco.cursor().clone();
-                let pos_phys = Point::<f64, Physical>::from((pos.0, pos.1));
+                let pos_phys = Point::<f64, Logical>::from((pos.0, pos.1)).to_physical_precise_round(scale_s);
                 if let Ok(elem) = MemoryRenderBufferRenderElement::from_buffer(
                     renderer,
                     pos_phys,

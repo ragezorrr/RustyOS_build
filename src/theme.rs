@@ -27,9 +27,45 @@ impl Default for Appearance {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WallpaperTheme {
+    Sequoia,
+    Sonoma,
+    Monterey,
+    Midnight,
+}
+
+impl WallpaperTheme {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Sequoia => "macOS Sequoia",
+            Self::Sonoma => "Sonoma Sunset",
+            Self::Monterey => "Monterey Blue",
+            Self::Midnight => "Midnight Space",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Sequoia => "Фирменная аврора индиго и фиолета",
+            Self::Sonoma => "Теплые лучи золотого заката",
+            Self::Monterey => "Глубокий океанический сапфир",
+            Self::Midnight => "Минималистичный глубокий космос",
+        }
+    }
+}
+
+impl Default for WallpaperTheme {
+    fn default() -> Self {
+        Self::Sequoia
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Theme {
     pub appearance: Appearance,
+    pub wallpaper_theme: WallpaperTheme,
+    pub night_shift: bool,
     /// System accent color (macOS blue by default).
     pub accent: [u8; 4],
 }
@@ -38,6 +74,8 @@ impl Default for Theme {
     fn default() -> Self {
         Self {
             appearance: Appearance::default(),
+            wallpaper_theme: WallpaperTheme::default(),
+            night_shift: false,
             accent: [0, 122, 255, 255],
         }
     }
@@ -65,6 +103,18 @@ impl Theme {
                         "dark" => theme.appearance = Appearance::Dark,
                         _ => {}
                     }
+                } else if let Some(value) = line.strip_prefix("wallpaper") {
+                    let value = value.trim_start_matches([' ', '=', '"', '\'']);
+                    match value.trim_end_matches(['"', '\'']) {
+                        "sequoia" => theme.wallpaper_theme = WallpaperTheme::Sequoia,
+                        "sonoma" => theme.wallpaper_theme = WallpaperTheme::Sonoma,
+                        "monterey" => theme.wallpaper_theme = WallpaperTheme::Monterey,
+                        "midnight" => theme.wallpaper_theme = WallpaperTheme::Midnight,
+                        _ => {}
+                    }
+                } else if let Some(value) = line.strip_prefix("night_shift") {
+                    let value = value.trim_start_matches([' ', '=', '"', '\'']);
+                    theme.night_shift = value.starts_with("true");
                 }
             }
         }
@@ -76,9 +126,17 @@ impl Theme {
         if let Some(dir) = path.parent() {
             let _ = fs::create_dir_all(dir);
         }
+        let wp_str = match self.wallpaper_theme {
+            WallpaperTheme::Sequoia => "sequoia",
+            WallpaperTheme::Sonoma => "sonoma",
+            WallpaperTheme::Monterey => "monterey",
+            WallpaperTheme::Midnight => "midnight",
+        };
         let contents = format!(
-            "# Aqua compositor configuration\nappearance = \"{}\"\n",
-            self.appearance.as_str()
+            "# Aqua compositor configuration\nappearance = \"{}\"\nwallpaper = \"{}\"\nnight_shift = {}\n",
+            self.appearance.as_str(),
+            wp_str,
+            self.night_shift,
         );
         let _ = fs::write(path, contents);
     }
@@ -162,38 +220,74 @@ impl Theme {
 
     pub fn wallpaper_top(&self) -> [u8; 4] {
         if self.dark() {
-            // Deep dark indigo — macOS Sequoia dark top
-            [18, 14, 42, 255]
+            match self.wallpaper_theme {
+                WallpaperTheme::Sequoia => [18, 14, 42, 255],
+                WallpaperTheme::Sonoma => [34, 16, 12, 255],
+                WallpaperTheme::Monterey => [12, 22, 52, 255],
+                WallpaperTheme::Midnight => [14, 16, 24, 255],
+            }
         } else {
-            [255, 214, 196, 255]
+            match self.wallpaper_theme {
+                WallpaperTheme::Sequoia => [255, 214, 196, 255],
+                WallpaperTheme::Sonoma => [255, 225, 190, 255],
+                WallpaperTheme::Monterey => [200, 230, 255, 255],
+                WallpaperTheme::Midnight => [242, 244, 250, 255],
+            }
         }
     }
 
     pub fn wallpaper_bottom(&self) -> [u8; 4] {
         if self.dark() {
-            // Near-black at the bottom
-            [6, 4, 14, 255]
+            match self.wallpaper_theme {
+                WallpaperTheme::Sequoia => [6, 4, 14, 255],
+                WallpaperTheme::Sonoma => [10, 6, 8, 255],
+                WallpaperTheme::Monterey => [4, 8, 22, 255],
+                WallpaperTheme::Midnight => [4, 4, 8, 255],
+            }
         } else {
-            [168, 196, 236, 255]
+            match self.wallpaper_theme {
+                WallpaperTheme::Sequoia => [168, 196, 236, 255],
+                WallpaperTheme::Sonoma => [235, 165, 130, 255],
+                WallpaperTheme::Monterey => [140, 185, 240, 255],
+                WallpaperTheme::Midnight => [205, 210, 222, 255],
+            }
         }
     }
 
     pub fn wallpaper_glow(&self) -> [u8; 4] {
         if self.dark() {
-            // Purple/violet aurora glow, Sequoia style
-            [68, 48, 148, 255]
+            match self.wallpaper_theme {
+                WallpaperTheme::Sequoia => [68, 48, 148, 255],
+                WallpaperTheme::Sonoma => [175, 75, 30, 255],
+                WallpaperTheme::Monterey => [20, 115, 165, 255],
+                WallpaperTheme::Midnight => [55, 68, 95, 255],
+            }
         } else {
-            [255, 244, 214, 255]
+            match self.wallpaper_theme {
+                WallpaperTheme::Sequoia => [255, 244, 214, 255],
+                WallpaperTheme::Sonoma => [255, 240, 210, 255],
+                WallpaperTheme::Monterey => [230, 245, 255, 255],
+                WallpaperTheme::Midnight => [255, 255, 255, 255],
+            }
         }
     }
 
     // Secondary glow color for multi-aurora effect
     pub fn wallpaper_glow2(&self) -> [u8; 4] {
         if self.dark() {
-            // Deep blue-violet
-            [38, 28, 100, 255]
+            match self.wallpaper_theme {
+                WallpaperTheme::Sequoia => [38, 28, 100, 255],
+                WallpaperTheme::Sonoma => [120, 45, 20, 255],
+                WallpaperTheme::Monterey => [18, 65, 135, 255],
+                WallpaperTheme::Midnight => [32, 42, 65, 255],
+            }
         } else {
-            [200, 220, 255, 255]
+            match self.wallpaper_theme {
+                WallpaperTheme::Sequoia => [200, 220, 255, 255],
+                WallpaperTheme::Sonoma => [240, 180, 150, 255],
+                WallpaperTheme::Monterey => [180, 210, 250, 255],
+                WallpaperTheme::Midnight => [220, 225, 235, 255],
+            }
         }
     }
 }

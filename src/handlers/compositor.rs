@@ -36,7 +36,7 @@ impl CompositorHandler for Aqua {
             if let Some(window) = self
                 .space
                 .elements()
-                .find(|w| w.toplevel().unwrap().wl_surface() == &root)
+                .find(|w| w.toplevel().map(|t| t.wl_surface() == &root).unwrap_or(false))
             {
                 window.on_commit();
             }

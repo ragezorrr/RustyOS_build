@@ -23,7 +23,9 @@ impl Aqua {
                 let serial = SERIAL_COUNTER.next_serial();
                 let time = Event::time_msec(&event);
                 let pressed = event.state() == KeyState::Pressed;
-                let keyboard = self.seat.get_keyboard().unwrap();
+                let Some(keyboard) = self.seat.get_keyboard() else {
+                    return;
+                };
 
                 keyboard.input::<(), _>(
                     self,
@@ -217,25 +219,54 @@ impl Aqua {
                 );
             }
             InputEvent::PointerMotion { event, .. } => {
-                let pointer = self.seat.get_pointer().unwrap();
+                let Some(pointer) = self.seat.get_pointer() else {
+                    return;
+                };
                 let serial = SERIAL_COUNTER.next_serial();
                 let current_pos = pointer.current_location();
                 let delta = event.delta();
                 let mut new_pos = current_pos + delta;
 
                 // Clamp to output bounds
-                if let Some(output) = self.space.outputs().next() {
-                    if let Some(geo) = self.space.output_geometry(output) {
-                        new_pos.x = new_pos.x.clamp(geo.loc.x as f64, (geo.loc.x + geo.size.w) as f64);
-                        new_pos.y = new_pos.y.clamp(geo.loc.y as f64, (geo.loc.y + geo.size.h) as f64);
-                    }
-                }
+                let geo = self.output_geometry();
+                new_pos.x = new_pos.x.clamp(geo.loc.x as f64, (geo.loc.x + geo.size.w) as f64);
+                new_pos.y = new_pos.y.clamp(geo.loc.y as f64, (geo.loc.y + geo.size.h) as f64);
 
                 // If settings window is being dragged, update its position
                 if let Some((start_pos, start_loc)) = self.settings_dragging {
                     let dx = (new_pos.x - start_pos.x).round() as i32;
                     let dy = (new_pos.y - start_pos.y).round() as i32;
                     self.settings.loc = Some((start_loc.x + dx, start_loc.y + dy));
+                    pointer.motion(
+                        self,
+                        None,
+                        &MotionEvent {
+                            location: new_pos,
+                            serial,
+                            time: event.time_msec(),
+                        },
+                    );
+                    pointer.frame(self);
+                    return;
+                }
+
+                // If control center slider is being dragged, update value
+                if let Some(slider) = self.control_center.dragging_slider {
+                    let cc_x = geo.size.w - crate::control_center::CC_W - 12;
+                    let cx = (new_pos.x as i32 - cc_x).clamp(24, 296);
+                    let val = ((cx - 24) as f32 / 272.0).clamp(0.0, 1.0);
+                    match slider {
+                        crate::control_center::ControlSlider::Brightness => {
+                            let b = val.clamp(0.05, 1.0);
+                            self.control_center.brightness = b;
+                            self.settings.display.brightness = b;
+                            self.osd.trigger(crate::notifications::OsdKind::Brightness, b);
+                        }
+                        crate::control_center::ControlSlider::Volume => {
+                            self.control_center.volume = val;
+                            self.osd.trigger(crate::notifications::OsdKind::Volume, val);
+                        }
+                    }
                     pointer.motion(
                         self,
                         None,
@@ -263,17 +294,48 @@ impl Aqua {
                 pointer.frame(self);
             }
             InputEvent::PointerMotionAbsolute { event, .. } => {
-                let output = self.space.outputs().next().unwrap();
-                let output_geo = self.space.output_geometry(output).unwrap();
+                let output_geo = self.output_geometry();
                 let pos = event.position_transformed(output_geo.size) + output_geo.loc.to_f64();
                 let serial = SERIAL_COUNTER.next_serial();
-                let pointer = self.seat.get_pointer().unwrap();
+                let Some(pointer) = self.seat.get_pointer() else {
+                    return;
+                };
 
                 // If settings window is being dragged, update its position
                 if let Some((start_pos, start_loc)) = self.settings_dragging {
                     let dx = (pos.x - start_pos.x).round() as i32;
                     let dy = (pos.y - start_pos.y).round() as i32;
                     self.settings.loc = Some((start_loc.x + dx, start_loc.y + dy));
+                    pointer.motion(
+                        self,
+                        None,
+                        &MotionEvent {
+                            location: pos,
+                            serial,
+                            time: event.time_msec(),
+                        },
+                    );
+                    pointer.frame(self);
+                    return;
+                }
+
+                // If control center slider is being dragged, update value
+                if let Some(slider) = self.control_center.dragging_slider {
+                    let cc_x = output_geo.size.w - crate::control_center::CC_W - 12;
+                    let cx = (pos.x as i32 - cc_x).clamp(24, 296);
+                    let val = ((cx - 24) as f32 / 272.0).clamp(0.0, 1.0);
+                    match slider {
+                        crate::control_center::ControlSlider::Brightness => {
+                            let b = val.clamp(0.05, 1.0);
+                            self.control_center.brightness = b;
+                            self.settings.display.brightness = b;
+                            self.osd.trigger(crate::notifications::OsdKind::Brightness, b);
+                        }
+                        crate::control_center::ControlSlider::Volume => {
+                            self.control_center.volume = val;
+                            self.osd.trigger(crate::notifications::OsdKind::Volume, val);
+                        }
+                    }
                     pointer.motion(
                         self,
                         None,
@@ -301,7 +363,7 @@ impl Aqua {
                 pointer.frame(self);
             }
             InputEvent::PointerButton { event, .. } => {
-                let pointer = self.seat.get_pointer().unwrap();
+                let Some(pointer) = self.seat.get_pointer() else { return; };
                 let serial = SERIAL_COUNTER.next_serial();
                 let button = event.button_code();
                 let button_state = event.state();
@@ -371,8 +433,7 @@ impl Aqua {
 
                     // Check Spotlight click if open
                     if self.spotlight.open {
-                        let output = self.space.outputs().next().unwrap();
-                        let geo = self.space.output_geometry(output).unwrap();
+                        let geo = self.output_geometry();
                         let spot_x = (geo.size.w - 620) / 2;
                         let spot_y = geo.size.h / 5;
                         let sx = pos.x as i32 - spot_x;
@@ -396,8 +457,7 @@ impl Aqua {
 
                     // Check Control Center click if open
                     if self.control_center.open {
-                        let output = self.space.outputs().next().unwrap();
-                        let geo = self.space.output_geometry(output).unwrap();
+                        let geo = self.output_geometry();
                         let cc_x = geo.size.w - crate::control_center::CC_W - 12;
                         let cc_y = crate::ui::PANEL_H + 8;
                         let cx = pos.x as i32 - cc_x;
@@ -424,15 +484,20 @@ impl Aqua {
                             }
                             // 4. Brightness slider click
                             if cx >= 24 && cx < 296 && cy >= 192 && cy < 216 {
-                                let val = (cx - 24) as f32 / 272.0;
-                                self.control_center.brightness = val.clamp(0.05, 1.0);
+                                let val = ((cx - 24) as f32 / 272.0).clamp(0.05, 1.0);
+                                self.control_center.brightness = val;
+                                self.settings.display.brightness = val;
+                                self.control_center.dragging_slider = Some(crate::control_center::ControlSlider::Brightness);
+                                self.osd.trigger(crate::notifications::OsdKind::Brightness, val);
                                 pointer.frame(self);
                                 return;
                             }
                             // 5. Volume slider click
                             if cx >= 24 && cx < 296 && cy >= 272 && cy < 296 {
-                                let val = (cx - 24) as f32 / 272.0;
-                                self.control_center.volume = val.clamp(0.0, 1.0);
+                                let val = ((cx - 24) as f32 / 272.0).clamp(0.0, 1.0);
+                                self.control_center.volume = val;
+                                self.control_center.dragging_slider = Some(crate::control_center::ControlSlider::Volume);
+                                self.osd.trigger(crate::notifications::OsdKind::Volume, val);
                                 pointer.frame(self);
                                 return;
                             }
@@ -446,8 +511,7 @@ impl Aqua {
 
                     // Check Wi-Fi / Network menu click if open
                     if self.wifi_menu.open {
-                        let output = self.space.outputs().next().unwrap();
-                        let geo = self.space.output_geometry(output).unwrap();
+                        let geo = self.output_geometry();
                         let wifi_menu_x = (geo.size.w - crate::wifi::WIFI_MENU_W - 90).max(10);
                         let wifi_menu_y = crate::ui::PANEL_H + 6;
                         let wx = pos.x as i32 - wifi_menu_x;
@@ -502,7 +566,10 @@ impl Aqua {
                             if let Some(act) = chosen {
                                 match act {
                                     crate::desktop_menu::DesktopMenuAction::NewFolder => self.spawn("dolphin"),
-                                    crate::desktop_menu::DesktopMenuAction::ChangeWallpaper => self.toggle_theme(),
+                                    crate::desktop_menu::DesktopMenuAction::ChangeWallpaper => {
+                                        self.settings.current_tab = crate::settings::SettingsTab::Wallpaper;
+                                        self.settings.open = true;
+                                    }
                                     crate::desktop_menu::DesktopMenuAction::OpenTerminal => self.spawn("konsole"),
                                     crate::desktop_menu::DesktopMenuAction::SystemSettings => self.settings.toggle(),
                                     _ => {}
@@ -517,8 +584,7 @@ impl Aqua {
 
                     // Check Notification Center Panel click if open
                     if self.notifications.panel_open {
-                        let output = self.space.outputs().next().unwrap();
-                        let geo = self.space.output_geometry(output).unwrap();
+                        let geo = self.output_geometry();
                         let nc_x = geo.size.w - crate::notifications::NC_PANEL_W - 12;
                         let nc_y = crate::ui::PANEL_H + 8;
                         let nx = pos.x as i32 - nc_x;
@@ -537,8 +603,7 @@ impl Aqua {
 
                     // Check Stage Manager thumbnail click (left side of screen)
                     if self.stage_manager.enabled && pos.x < 90.0 {
-                        let output = self.space.outputs().next().unwrap();
-                        let geo = self.space.output_geometry(output).unwrap();
+                        let geo = self.output_geometry();
                         let windows: Vec<_> = self.space.elements().cloned().collect();
                         let inactive_windows: Vec<_> = windows.iter().filter(|w| Some(*w) != self.focused_window.as_ref()).take(4).collect();
                         let item_h = 64;
@@ -559,8 +624,7 @@ impl Aqua {
 
                     // Check Settings click if open
                     if self.settings.open {
-                        let output = self.space.outputs().next().unwrap();
-                        let geo = self.space.output_geometry(output).unwrap();
+                        let geo = self.output_geometry();
                         let (set_x, set_y) = self.settings.loc.unwrap_or_else(|| {
                             (
                                 (geo.size.w - crate::settings::SETTINGS_W) / 2,
@@ -584,7 +648,17 @@ impl Aqua {
                                 pointer.frame(self);
                                 return;
                             }
-                            self.settings.handle_click(sx, sy, &mut self.shell.theme);
+                            let action = self.settings.handle_click(sx, sy, &mut self.shell.theme);
+                            match action {
+                                crate::settings::SettingsAction::BrightnessChanged(val) => {
+                                    self.control_center.brightness = val;
+                                    self.osd.trigger(crate::notifications::OsdKind::Brightness, val);
+                                }
+                                crate::settings::SettingsAction::ThemeChanged | crate::settings::SettingsAction::WallpaperChanged => {
+                                    // Triggered automatic theme persistence and re-render
+                                }
+                                crate::settings::SettingsAction::None => {}
+                            }
                             pointer.frame(self);
                             return;
                         }
@@ -778,7 +852,9 @@ impl Aqua {
                         self.space.raise_element(&window, true);
                         self.focus_window(&window);
                         self.space.elements().for_each(|w| {
-                            w.toplevel().unwrap().send_pending_configure();
+                            if let Some(toplevel) = w.toplevel() {
+                                toplevel.send_pending_configure();
+                            }
                         });
 
                         if button == BTN_LEFT {
@@ -824,7 +900,9 @@ impl Aqua {
                         self.space.raise_element(&window, true);
                         self.focus_window(&window);
                         self.space.elements().for_each(|w| {
-                            w.toplevel().unwrap().send_pending_configure();
+                            if let Some(toplevel) = w.toplevel() {
+                                toplevel.send_pending_configure();
+                            }
                         });
                     } else {
                         // Click on wallpaper (empty space)
@@ -839,17 +917,19 @@ impl Aqua {
                         self.focused_window = None;
                         self.space.elements().for_each(|w| {
                             w.set_activated(false);
-                            w.toplevel().unwrap().send_pending_configure();
+                            if let Some(toplevel) = w.toplevel() {
+                                toplevel.send_pending_configure();
+                            }
                         });
-                        self.seat
-                            .get_keyboard()
-                            .unwrap()
-                            .set_focus(self, Option::<WlSurface>::None, serial);
+                        if let Some(keyboard) = self.seat.get_keyboard() {
+                            keyboard.set_focus(self, Option::<WlSurface>::None, serial);
+                        }
                     }
                 }
 
                 if ButtonState::Released == button_state {
                     self.settings_dragging = None;
+                    self.control_center.dragging_slider = None;
                 }
 
                 pointer.button(
@@ -898,7 +978,7 @@ impl Aqua {
                     }
                 }
 
-                let pointer = self.seat.get_pointer().unwrap();
+                let Some(pointer) = self.seat.get_pointer() else { return; };
                 pointer.axis(self, frame);
                 pointer.frame(self);
             }

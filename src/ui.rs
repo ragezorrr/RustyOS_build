@@ -172,6 +172,8 @@ struct WallpaperSig {
     width: i32,
     height: i32,
     dark: bool,
+    theme: crate::theme::WallpaperTheme,
+    night_shift: bool,
 }
 
 pub struct Shell {
@@ -329,6 +331,8 @@ impl Shell {
             width,
             height,
             dark: self.theme.dark(),
+            theme: self.theme.wallpaper_theme,
+            night_shift: self.theme.night_shift,
         };
         if self.wallpaper_sig.as_ref() != Some(&wallpaper_sig) {
             self.wallpaper = Some(CachedBuffer {
@@ -604,12 +608,9 @@ impl Shell {
         .expect("wallpaper gradient");
         let mut paint = Paint::default();
         paint.shader = shader;
-        pm.fill_rect(
-            tiny_skia::Rect::from_xywh(0.0, 0.0, w as f32, h as f32).unwrap(),
-            &paint,
-            SkTransform::identity(),
-            None,
-        );
+        if let Some(rect) = tiny_skia::Rect::from_xywh(0.0, 0.0, w as f32, h as f32) {
+            pm.fill_rect(rect, &paint, SkTransform::identity(), None);
+        }
 
         // macOS Sequoia dark: swirling aurora ribbons
         // Large primary glow — upper-left area

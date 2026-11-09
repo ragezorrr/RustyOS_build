@@ -259,6 +259,12 @@ impl Aqua {
         self.space.outputs().next().cloned()
     }
 
+    pub fn output_geometry(&self) -> smithay::utils::Rectangle<i32, Logical> {
+        self.current_output()
+            .and_then(|o| self.space.output_geometry(&o))
+            .unwrap_or_else(|| smithay::utils::Rectangle::new((0, 0).into(), (1920, 1080).into()))
+    }
+
     pub fn work_area(&self) -> Option<smithay::utils::Rectangle<i32, Logical>> {
         let output = self.current_output()?;
         let geometry = self.space.output_geometry(&output)?;
