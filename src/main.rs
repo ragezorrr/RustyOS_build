@@ -9,6 +9,7 @@ mod state;
 mod text;
 mod theme;
 mod ui;
+pub mod udev;
 mod winit;
 pub mod apps;
 pub mod control_center;
@@ -47,8 +48,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         display_handle,
     };
 
-    crate::winit::init_winit(&mut event_loop, &mut data)?;
-
     let mut args = std::env::args().skip(1);
     let flag = args.next();
     let arg = args.next();
@@ -67,9 +66,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::Command::new(command).spawn().ok();
     }
 
-    event_loop.run(None, &mut data, move |_| {
-        // Aqua is running
-    })?;
+    let has_parent_display = std::env::var_os("WAYLAND_DISPLAY").is_some()
+        || std::env::var_os("DISPLAY").is_some();
+
+    if has_parent_display {
+        tracing::info!("Parent display found, running in nested winit mode");
+        crate::winit::init_winit(&mut event_loop, &mut data)?;
+        event_loop.run(None, &mut data, move |_| {})?;
+    } else {
+        tracing::info!("No parent display, running in native DRM/KMS udev mode");
+        crate::udev::run_udev(event_loop, data)?;
+    }
 
     Ok(())
 }
