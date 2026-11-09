@@ -1,7 +1,7 @@
 use smithay::{
     backend::input::{
         AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
-        KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
+        KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
     },
     input::{
         keyboard::{keysyms, FilterResult},
@@ -216,7 +216,52 @@ impl Aqua {
                     },
                 );
             }
-            InputEvent::PointerMotion { .. } => {}
+            InputEvent::PointerMotion { event, .. } => {
+                let pointer = self.seat.get_pointer().unwrap();
+                let serial = SERIAL_COUNTER.next_serial();
+                let current_pos = pointer.current_location();
+                let delta = event.delta();
+                let mut new_pos = current_pos + delta;
+
+                // Clamp to output bounds
+                if let Some(output) = self.space.outputs().next() {
+                    if let Some(geo) = self.space.output_geometry(output) {
+                        new_pos.x = new_pos.x.clamp(geo.loc.x as f64, (geo.loc.x + geo.size.w) as f64);
+                        new_pos.y = new_pos.y.clamp(geo.loc.y as f64, (geo.loc.y + geo.size.h) as f64);
+                    }
+                }
+
+                // If settings window is being dragged, update its position
+                if let Some((start_pos, start_loc)) = self.settings_dragging {
+                    let dx = (new_pos.x - start_pos.x).round() as i32;
+                    let dy = (new_pos.y - start_pos.y).round() as i32;
+                    self.settings.loc = Some((start_loc.x + dx, start_loc.y + dy));
+                    pointer.motion(
+                        self,
+                        None,
+                        &MotionEvent {
+                            location: new_pos,
+                            serial,
+                            time: event.time_msec(),
+                        },
+                    );
+                    pointer.frame(self);
+                    return;
+                }
+
+                let under = self.surface_under(new_pos);
+
+                pointer.motion(
+                    self,
+                    under,
+                    &MotionEvent {
+                        location: new_pos,
+                        serial,
+                        time: event.time_msec(),
+                    },
+                );
+                pointer.frame(self);
+            }
             InputEvent::PointerMotionAbsolute { event, .. } => {
                 let output = self.space.outputs().next().unwrap();
                 let output_geo = self.space.output_geometry(output).unwrap();
