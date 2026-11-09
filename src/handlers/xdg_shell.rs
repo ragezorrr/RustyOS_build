@@ -167,6 +167,36 @@ impl XdgShellHandler for Aqua {
     fn grab(&mut self, _surface: PopupSurface, _seat: wl_seat::WlSeat, _serial: Serial) {
         // TODO popup grabs
     }
+
+    fn maximize_request(&mut self, surface: ToplevelSurface) {
+        let wl_surface = surface.wl_surface();
+        let window = self
+            .space
+            .elements()
+            .find(|w| w.toplevel().map(|t| t.wl_surface() == wl_surface).unwrap_or(false))
+            .cloned();
+
+        if let Some(window) = window {
+            self.toggle_maximized(&window);
+        }
+    }
+
+    fn unmaximize_request(&mut self, surface: ToplevelSurface) {
+        let wl_surface = surface.wl_surface();
+        let window = self
+            .space
+            .elements()
+            .find(|w| w.toplevel().map(|t| t.wl_surface() == wl_surface).unwrap_or(false))
+            .cloned();
+
+        if let Some(window) = window {
+            if let Some(key) = crate::render::window_key(&window) {
+                if self.maximized.contains_key(&key) {
+                    self.toggle_maximized(&window);
+                }
+            }
+        }
+    }
 }
 
 // Xdg Shell
