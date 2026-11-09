@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Aqua (macOS Sequoia)
+Comment=macOS Sequoia-styled Wayland Compositor in Rust
+Exec=/usr/local/bin/aqua
+Type=Application
+DesktopNames=Aqua
+Keywords=wayland;compositor;aqua;macos;

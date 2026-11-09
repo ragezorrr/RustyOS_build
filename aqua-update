@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+#
+# Aqua Compositor — Update Script
+# Updates Aqua to the latest commit from GitHub and rebuilds the release binary.
+#
+
+set -e
+
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+echo -e "${BLUE}==>${NC} Checking for Aqua updates..."
+
+AQUA_DIR="$HOME/.local/share/aqua-source"
+
+if [ ! -d "$AQUA_DIR" ]; then
+    # If installed from current workspace, try using current dir if it's a git repo
+    if [ -d "$PWD/.git" ] && git remote get-url origin 2>/dev/null | grep -q "RustyOS"; then
+        AQUA_DIR="$PWD"
+    else
+        echo -e "${BLUE}==>${NC} Cloning repository to $AQUA_DIR..."
+        git clone https://github.com/ragezorrr/RustyOS.git "$AQUA_DIR"
+    fi
+fi
+
+cd "$AQUA_DIR"
+
+echo -e "${BLUE}==>${NC} Pulling latest changes from GitHub..."
+git fetch origin main
+LOCAL=$(git rev-parse HEAD)
+REMOTE=$(git rev-parse origin/main)
+
+if [ "$LOCAL" = "$REMOTE" ] && [ "$1" != "--force" ]; then
+    echo -e "${GREEN}==>${NC} Aqua is already up to date! (commit: ${LOCAL:0:7})"
+    exit 0
+fi
+
+git pull origin main
+
+echo -e "${BLUE}==>${NC} Building updated release binary..."
+export PATH="$HOME/.cargo/bin:$PATH"
+cargo build --release
+
+echo -e "${BLUE}==>${NC} Installing updated binary to /usr/local/bin/aqua..."
+sudo install -Dm755 target/release/aqua /usr/local/bin/aqua
+sudo install -Dm644 aqua.desktop /usr/share/wayland-sessions/aqua.desktop
+
+echo -e "${GREEN}==>${NC} Successfully updated Aqua to commit $(git rev-parse --short HEAD)!"
+echo -e "${GREEN}==>${NC} Restart your Aqua session to apply the changes."
