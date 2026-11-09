@@ -654,6 +654,9 @@ impl Aqua {
                                     self.control_center.brightness = val;
                                     self.osd.trigger(crate::notifications::OsdKind::Brightness, val);
                                 }
+                                crate::settings::SettingsAction::ApplyDisplay { width, height, scale } => {
+                                    self.apply_display_mode(width, height, scale);
+                                }
                                 crate::settings::SettingsAction::ThemeChanged | crate::settings::SettingsAction::WallpaperChanged => {
                                     // Triggered automatic theme persistence and re-render
                                 }

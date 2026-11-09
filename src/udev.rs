@@ -137,13 +137,15 @@ pub fn run_udev(
                         refresh: (mode.vrefresh() * 1000) as i32,
                     };
 
+                    let conn_name = format!("{}-{}", conn_info.interface().as_str(), conn_info.interface_id());
+                    let display_info = crate::settings::detect_display_info();
                     let output = Output::new(
-                        format!("DRM-{}", outputs.len() + 1),
+                        conn_name.clone(),
                         PhysicalProperties {
-                            size: (0, 0).into(),
+                            size: conn_info.size().map(|(w, h)| (w as i32, h as i32).into()).unwrap_or_else(|| (344, 194).into()),
                             subpixel: Subpixel::Unknown,
-                            make: "Generic".into(),
-                            model: "Monitor".into(),
+                            make: display_info.name.clone(),
+                            model: conn_name,
                         },
                     );
                     let _global = output.create_global::<Aqua>(&mut data.display_handle);

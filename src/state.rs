@@ -271,6 +271,93 @@ impl Aqua {
         Some(self.shell.work_area(geometry.size.w, geometry.size.h))
     }
 
+    pub fn apply_display_mode(&mut self, width: i32, height: i32, scale_percent: i32) {
+        self.settings.display.resolution = (width, height);
+        self.settings.display.scaling = scale_percent;
+        self.settings.display.applied_feedback = Some(std::time::Instant::now());
+
+        let scale_factor = scale_percent as f64 / 100.0;
+
+        if let Some(output) = self.current_output() {
+            let mode = smithay::output::Mode {
+                size: (width, height).into(),
+                refresh: self.settings.display.refresh_rate * 1000,
+            };
+            let scale = if scale_percent == 100 {
+                smithay::output::Scale::Integer(1)
+            } else {
+                smithay::output::Scale::Fractional(scale_factor)
+            };
+
+            output.change_current_state(
+                Some(mode),
+                Some(smithay::utils::Transform::Normal),
+                Some(scale),
+                Some((0, 0).into()),
+            );
+
+            // Remap output so Space updates its logical dimensions
+            self.space.map_output(&output, (0, 0));
+        }
+
+        // Force full recalculation of shell geometry (menu bar, dock, hitboxes, wallpaper)
+        self.shell.invalidate_cache();
+
+        // Reposition / center Settings window within new screen dimensions
+        let geo = self.output_geometry();
+        let set_x = ((geo.size.w - crate::settings::SETTINGS_W) / 2).max(10);
+        let set_y = ((geo.size.h - crate::settings::SETTINGS_H) / 2).max(crate::ui::PANEL_H + 10);
+        self.settings.loc = Some((set_x, set_y));
+
+        // Clamp pointer within new screen dimensions if needed
+        if let Some(pointer) = self.seat.get_pointer() {
+            let loc = pointer.current_location();
+            if loc.x >= geo.size.w as f64 || loc.y >= geo.size.h as f64 {
+                let clamped_x = loc.x.clamp(0.0, (geo.size.w - 2) as f64);
+                let clamped_y = loc.y.clamp(0.0, (geo.size.h - 2) as f64);
+                let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+                pointer.motion(
+                    self,
+                    None,
+                    &smithay::input::pointer::MotionEvent {
+                        location: (clamped_x, clamped_y).into(),
+                        serial,
+                        time: 0,
+                    },
+                );
+                pointer.frame(self);
+            }
+        }
+
+        // Reconfigure windows to fit new work area
+        if let Some(work_area) = self.work_area() {
+            let windows: Vec<_> = self.space.elements().cloned().collect();
+            for w in windows {
+                if let Some(loc) = self.space.element_location(&w) {
+                    let mut new_loc = loc;
+                    if new_loc.x + 80 > work_area.loc.x + work_area.size.w {
+                        new_loc.x = (work_area.loc.x + work_area.size.w - w.geometry().size.w).max(work_area.loc.x);
+                    }
+                    if new_loc.y + 80 > work_area.loc.y + work_area.size.h {
+                        new_loc.y = (work_area.loc.y + work_area.size.h - w.geometry().size.h).max(work_area.loc.y);
+                    }
+                    if new_loc != loc {
+                        self.space.map_element(w.clone(), new_loc, false);
+                    }
+                }
+                if let Some(toplevel) = w.toplevel() {
+                    toplevel.send_pending_configure();
+                }
+            }
+        }
+
+        self.notifications.post(
+            "Настройки экрана",
+            "Разрешение применено",
+            &format!("Установлен режим: {} × {} ({}%)", width, height, scale_percent),
+        );
+    }
+
     pub fn focus_window(&mut self, window: &Window) {
         self.focused_window = Some(window.clone());
         if let Some(toplevel) = window.toplevel() {

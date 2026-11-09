@@ -28,29 +28,176 @@ pub enum SettingsAction {
     ThemeChanged,
     BrightnessChanged(f32),
     WallpaperChanged,
+    ApplyDisplay {
+        width: i32,
+        height: i32,
+        scale: i32,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct DetectedDisplay {
+    pub name: String,
+    pub connector: String,
+    pub resolution: (i32, i32),
+    pub refresh_rate: i32,
+}
+
+pub fn detect_display_info() -> DetectedDisplay {
+    let dmi_prod = std::fs::read_to_string("/sys/class/dmi/id/product_name")
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let dmi_vendor = std::fs::read_to_string("/sys/class/dmi/id/sys_vendor")
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+
+    let mut detected_conn = String::new();
+    let mut modes = Vec::new();
+    let mut diag_inch = 0.0f32;
+    let mut edid_mfg = String::new();
+    let mut edid_name = String::new();
+
+    if let Ok(entries) = std::fs::read_dir("/sys/class/drm") {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let file_name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            if file_name.contains('-') && !file_name.starts_with("render") {
+                let status_path = path.join("status");
+                if let Ok(status) = std::fs::read_to_string(&status_path) {
+                    if status.trim() == "connected" {
+                        detected_conn = file_name.splitn(2, '-').nth(1).unwrap_or(&file_name).to_string();
+
+                        if let Ok(m_str) = std::fs::read_to_string(path.join("modes")) {
+                            for line in m_str.lines() {
+                                let l = line.trim();
+                                if let Some((w_s, h_s)) = l.split_once('x') {
+                                    if let (Ok(w), Ok(h)) = (w_s.parse::<i32>(), h_s.parse::<i32>()) {
+                                        modes.push((w, h));
+                                    }
+                                }
+                            }
+                        }
+
+                        if let Ok(edid_bytes) = std::fs::read(path.join("edid")) {
+                            if edid_bytes.len() >= 128 {
+                                let c1 = (edid_bytes[8] & 0x7c) >> 2;
+                                let c2 = ((edid_bytes[8] & 0x03) << 3) | ((edid_bytes[9] & 0xe0) >> 5);
+                                let c3 = edid_bytes[9] & 0x1f;
+                                if c1 > 0 && c2 > 0 && c3 > 0 {
+                                    edid_mfg = format!(
+                                        "{}{}{}",
+                                        (c1 + b'A' - 1) as char,
+                                        (c2 + b'A' - 1) as char,
+                                        (c3 + b'A' - 1) as char
+                                    );
+                                }
+                                let w_cm = edid_bytes[21] as f32;
+                                let h_cm = edid_bytes[22] as f32;
+                                if w_cm > 0.0 && h_cm > 0.0 {
+                                    diag_inch = (w_cm * w_cm + h_cm * h_cm).sqrt() / 2.54;
+                                }
+                                for offset in [54, 72, 90, 108] {
+                                    if offset + 18 <= edid_bytes.len() {
+                                        let blk = &edid_bytes[offset..offset + 18];
+                                        if blk[0] == 0 && blk[1] == 0 && blk[2] == 0 && (blk[3] == 0xFC || blk[3] == 0xFE) {
+                                            let s = String::from_utf8_lossy(&blk[5..18]);
+                                            let clean = s.split('\n').next().unwrap_or(&s).trim();
+                                            if !clean.is_empty() {
+                                                edid_name = clean.to_string();
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    let connector = if !detected_conn.is_empty() {
+        detected_conn
+    } else {
+        "eDP-1".to_string()
+    };
+
+    let native_res = modes.first().copied().unwrap_or((1920, 1080));
+    let is_internal = connector.starts_with("eDP") || connector.starts_with("LVDS") || connector.starts_with("DSI");
+    let diag_str = if diag_inch > 10.0 {
+        format!("{:.1}″", diag_inch)
+    } else {
+        "15.6″".to_string()
+    };
+
+    let display_name = if !edid_name.is_empty() {
+        format!("{} ({})", edid_name, connector)
+    } else if is_internal {
+        if !dmi_prod.is_empty() {
+            let clean = dmi_prod.replace("Notebook PC", "").replace("Laptop", "").trim().to_string();
+            format!("Встроенный дисплей {} ({})", clean, connector)
+        } else {
+            let brand = if !dmi_vendor.is_empty() {
+                dmi_vendor
+            } else if !edid_mfg.is_empty() {
+                edid_mfg
+            } else {
+                "Retina".to_string()
+            };
+            format!("Встроенный дисплей {} {} ({})", brand, diag_str, connector)
+        }
+    } else if connector.starts_with("HDMI") {
+        format!("Внешний монитор HDMI ({})", connector)
+    } else if connector.starts_with("DP") {
+        format!("Внешний дисплей DisplayPort ({})", connector)
+    } else {
+        format!("Дисплей ({})", connector)
+    };
+
+    DetectedDisplay {
+        name: display_name,
+        connector,
+        resolution: native_res,
+        refresh_rate: 60,
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct DisplayConfig {
+    pub display_name: String,
+    pub connector: String,
     pub resolution: (i32, i32),
     pub refresh_rate: i32,
+    pub pending_resolution: (i32, i32),
+    pub pending_scaling: i32,
     pub brightness: f32,        // 0.0 .. 1.0 (default 0.85)
     pub scaling: i32,           // 100, 125, 150, 200
-    pub selected_preset: usize, // 0: 1280x720, 1: 1600x900, 2: 1920x1080, 3: 2560x1440
+    pub selected_preset: usize, // 0: 1280x720, 1: 1600x900, 2: 1920x1080, 3: 125%
     pub night_shift: bool,
     pub auto_brightness: bool,
+    pub applied_feedback: Option<std::time::Instant>,
 }
 
 impl Default for DisplayConfig {
     fn default() -> Self {
+        let detected = detect_display_info();
         Self {
-            resolution: (1920, 1080),
-            refresh_rate: 60,
+            display_name: detected.name,
+            connector: detected.connector,
+            resolution: detected.resolution,
+            refresh_rate: detected.refresh_rate,
+            pending_resolution: detected.resolution,
+            pending_scaling: 100,
             brightness: 0.85,
             scaling: 100,
             selected_preset: 2,
             night_shift: false,
             auto_brightness: true,
+            applied_feedback: None,
         }
     }
 }
@@ -134,48 +281,60 @@ impl SettingsWindow {
 
         match self.current_tab {
             SettingsTab::Displays => {
-                // 1. Brightness slider (cx: 10..380, cy: 190..230)
-                if cx >= 10 && cx < 380 && cy >= 190 && cy < 232 {
+                // 1. Brightness slider (cx: 10..380, cy: 135..185)
+                if cx >= 10 && cx < 380 && cy >= 135 && cy < 185 {
                     let ratio = ((cx - 10) as f32 / 360.0).clamp(0.05, 1.0);
                     self.display.brightness = ratio;
                     return SettingsAction::BrightnessChanged(ratio);
                 }
 
-                // 2. Preset resolution cards (cy: 260..324)
-                if cy >= 260 && cy < 324 {
+                // 2. Preset resolution cards (cy: 215..268)
+                if cy >= 215 && cy < 268 {
                     if cx >= 10 && cx < 96 {
                         self.display.selected_preset = 0;
-                        self.display.resolution = (1280, 720);
-                        self.display.scaling = 100;
+                        self.display.pending_resolution = (1280, 720);
+                        self.display.pending_scaling = 100;
                         return SettingsAction::None;
                     } else if cx >= 102 && cx < 188 {
                         self.display.selected_preset = 1;
-                        self.display.resolution = (1600, 900);
-                        self.display.scaling = 100;
+                        self.display.pending_resolution = (1600, 900);
+                        self.display.pending_scaling = 100;
                         return SettingsAction::None;
                     } else if cx >= 194 && cx < 280 {
                         self.display.selected_preset = 2;
-                        self.display.resolution = (1920, 1080);
-                        self.display.scaling = 100;
+                        self.display.pending_resolution = (1920, 1080);
+                        self.display.pending_scaling = 100;
                         return SettingsAction::None;
                     } else if cx >= 286 && cx < 372 {
                         self.display.selected_preset = 3;
-                        self.display.resolution = (1920, 1080);
-                        self.display.scaling = 125;
+                        self.display.pending_resolution = (1920, 1080);
+                        self.display.pending_scaling = 125;
                         return SettingsAction::None;
                     }
                 }
 
-                // 3. Night Shift toggle (cx: 10..380, cy: 345..385)
-                if cx >= 10 && cx < 380 && cy >= 345 && cy < 385 {
+                // 3. "Применить" (Apply) button (cx: 245..365, cy: 268..310)
+                if cx >= 245 && cx <= 365 && cy >= 268 && cy <= 310 {
+                    self.display.resolution = self.display.pending_resolution;
+                    self.display.scaling = self.display.pending_scaling;
+                    self.display.applied_feedback = Some(std::time::Instant::now());
+                    return SettingsAction::ApplyDisplay {
+                        width: self.display.resolution.0,
+                        height: self.display.resolution.1,
+                        scale: self.display.scaling,
+                    };
+                }
+
+                // 4. Night Shift toggle (cx: 10..380, cy: 315..355)
+                if cx >= 10 && cx < 380 && cy >= 315 && cy < 355 {
                     self.display.night_shift = !self.display.night_shift;
                     theme.night_shift = self.display.night_shift;
                     theme.save();
                     return SettingsAction::ThemeChanged;
                 }
 
-                // 4. Auto brightness toggle (cx: 10..380, cy: 395..435)
-                if cx >= 10 && cx < 380 && cy >= 395 && cy < 435 {
+                // 5. Auto brightness toggle (cx: 10..380, cy: 365..405)
+                if cx >= 10 && cx < 380 && cy >= 365 && cy < 405 {
                     self.display.auto_brightness = !self.display.auto_brightness;
                     return SettingsAction::None;
                 }
@@ -350,49 +509,56 @@ pub fn render_settings(
 
     match settings.current_tab {
         SettingsTab::Displays => {
-            text.draw_bold(&mut pm, "Настройки дисплея", cx, cy + 18.0, 18.0, fg);
+            text.draw_bold(&mut pm, "Настройки дисплея", cx, cy + 16.0, 18.0, fg);
 
             // 1. Retina Display Preview Illustration
-            let mon_x = cx + 80.0;
-            let mon_y = cy + 34.0;
-            let mon_w = 160.0;
-            let mon_h = 96.0;
+            let mon_x = cx + (360.0 - 130.0) / 2.0;
+            let mon_y = cy + 28.0;
+            let mon_w = 130.0;
+            let mon_h = 76.0;
 
-            // Monitor stand
-            fill_rect(&mut pm, mon_x + 72.0, mon_y + mon_h, 16.0, 12.0, [130, 130, 140, 255]);
-            draw_round_rect(&mut pm, mon_x + 56.0, mon_y + mon_h + 10.0, 48.0, 4.0, 2.0, [160, 160, 170, 255]);
-
-            // Monitor frame / bezel
-            draw_round_rect(&mut pm, mon_x, mon_y, mon_w, mon_h, 8.0, [32, 32, 38, 255]);
-            stroke_round_rect(&mut pm, mon_x, mon_y, mon_w, mon_h, 8.0, [80, 80, 95, 255], 1.2);
+            // Display housing
+            let bezel_c = if dark { [50, 50, 58, 255] } else { [190, 190, 200, 255] };
+            draw_round_rect(&mut pm, mon_x, mon_y, mon_w, mon_h, 7.0, bezel_c);
+            // Display stand / chin
+            draw_round_rect(&mut pm, mon_x + mon_w * 0.38, mon_y + mon_h, mon_w * 0.24, 7.0, 2.0, bezel_c);
+            draw_round_rect(&mut pm, mon_x + mon_w * 0.30, mon_y + mon_h + 6.0, mon_w * 0.40, 2.5, 1.0, bezel_c);
 
             // Screen content (wallpaper preview inside monitor)
-            let sc_x = mon_x + 5.0;
-            let sc_y = mon_y + 5.0;
-            let sc_w = mon_w - 10.0;
-            let sc_h = mon_h - 10.0;
+            let sc_x = mon_x + 4.0;
+            let sc_y = mon_y + 4.0;
+            let sc_w = mon_w - 8.0;
+            let sc_h = mon_h - 8.0;
             let top_c = theme.wallpaper_top();
             let bot_c = theme.wallpaper_bottom();
             let glow_c = theme.wallpaper_glow();
             draw_round_rect(&mut pm, sc_x, sc_y, sc_w, sc_h, 4.0, bot_c);
             fill_rect(&mut pm, sc_x, sc_y, sc_w, sc_h * 0.5, top_c);
-            fill_circle(&mut pm, sc_x + sc_w * 0.4, sc_y + sc_h * 0.4, 24.0, glow_c);
+            fill_circle(&mut pm, sc_x + sc_w * 0.4, sc_y + sc_h * 0.4, 22.0, glow_c);
             // Miniature menu bar & dock
             fill_rect(&mut pm, sc_x, sc_y, sc_w, 3.0, [255, 255, 255, 60]);
             draw_round_rect(&mut pm, sc_x + sc_w * 0.25, sc_y + sc_h - 4.0, sc_w * 0.5, 3.0, 1.5, [255, 255, 255, 90]);
 
-            // Display Title & Info
-            text.draw_bold(&mut pm, "Встроенный дисплей Liquid Retina", cx + 55.0, mon_y + mon_h + 28.0, 12.5, fg);
-            let mode_str = format!("{} × {} @ {} Гц", settings.display.resolution.0, settings.display.resolution.1, settings.display.refresh_rate);
-            text.draw(&mut pm, &mode_str, cx + 110.0, mon_y + mon_h + 44.0, 11.5, fg_dim);
+            // Display Title & Info (Real detected hardware!)
+            let name_x = cx + (360.0 - (settings.display.display_name.len() as f32 * 6.5)).max(10.0) / 2.0;
+            text.draw_bold(&mut pm, &settings.display.display_name, name_x, mon_y + mon_h + 20.0, 13.0, fg);
+            let mode_str = format!(
+                "{} × {} @ {} Гц • Нативное ({})",
+                settings.display.resolution.0,
+                settings.display.resolution.1,
+                settings.display.refresh_rate,
+                settings.display.connector
+            );
+            let mode_x = cx + (360.0 - (mode_str.len() as f32 * 5.6)).max(10.0) / 2.0;
+            text.draw(&mut pm, &mode_str, mode_x, mon_y + mon_h + 34.0, 10.5, fg_dim);
 
             // 2. Brightness Slider
-            let b_y = cy + 196.0;
-            text.draw_bold(&mut pm, "Яркость", cx, b_y + 16.0, 12.5, fg);
+            let b_y = cy + 144.0;
+            text.draw_bold(&mut pm, "Яркость", cx, b_y + 14.0, 12.0, fg);
             let b_str = format!("{:.0}%", settings.display.brightness * 100.0);
-            text.draw(&mut pm, &b_str, cx + 335.0, b_y + 16.0, 11.5, fg_dim);
+            text.draw(&mut pm, &b_str, cx + 332.0, b_y + 14.0, 11.0, fg_dim);
 
-            let bar_y = b_y + 26.0;
+            let bar_y = b_y + 22.0;
             let bar_w = 360.0;
             draw_round_rect(&mut pm, cx, bar_y, bar_w, 8.0, 4.0, if dark { [60, 60, 70, 255] } else { [220, 220, 230, 255] });
             let fill_w = bar_w * settings.display.brightness.clamp(0.0, 1.0);
@@ -400,49 +566,91 @@ pub fn render_settings(
             fill_circle(&mut pm, cx + fill_w, bar_y + 4.0, 8.0, [255, 255, 255, 255]);
 
             // 3. Resolution / Scaling Cards
-            let sc_y = cy + 248.0;
-            text.draw_bold(&mut pm, "Разрешение и масштабирование", cx, sc_y + 14.0, 12.5, fg);
+            let sc_y = cy + 194.0;
+            text.draw_bold(&mut pm, "Разрешение и масштабирование", cx, sc_y + 14.0, 12.0, fg);
 
             let presets = [
-                ("1280×720", "Крупнее"),
-                ("1600×900", "Среднее"),
-                ("1920×1080", "Стандарт"),
-                ("Больше", "125%"),
+                ("1280×720", "Крупный"),
+                ("1600×900", "Средний"),
+                ("1920×1080", "1080p"),
+                ("1920×1080", "125%"),
             ];
 
             let card_w = 84.0;
-            let card_h = 50.0;
+            let card_h = 44.0;
             for (i, (res, label)) in presets.iter().enumerate() {
                 let px = cx + i as f32 * 92.0;
-                let py = sc_y + 24.0;
+                let py = sc_y + 22.0;
                 let is_sel = settings.display.selected_preset == i;
                 let card_bg = if dark {
-                    if is_sel { [42, 42, 52, 255] } else { [32, 32, 38, 255] }
+                    if is_sel { [42, 42, 54, 255] } else { [32, 32, 38, 255] }
                 } else {
                     if is_sel { [255, 255, 255, 255] } else { [236, 236, 242, 255] }
                 };
 
-                draw_round_rect(&mut pm, px, py, card_w, card_h, 8.0, card_bg);
+                draw_round_rect(&mut pm, px, py, card_w, card_h, 7.0, card_bg);
                 if is_sel {
-                    stroke_round_rect(&mut pm, px, py, card_w, card_h, 8.0, theme.accent, 2.0);
+                    stroke_round_rect(&mut pm, px, py, card_w, card_h, 7.0, theme.accent, 2.0);
                 } else {
-                    stroke_round_rect(&mut pm, px, py, card_w, card_h, 8.0, if dark { [60, 60, 72, 200] } else { [210, 210, 220, 255] }, 1.0);
+                    stroke_round_rect(&mut pm, px, py, card_w, card_h, 7.0, if dark { [60, 60, 72, 200] } else { [210, 210, 220, 255] }, 1.0);
                 }
 
-                text.draw_bold(&mut pm, res, px + 12.0, py + 22.0, 11.0, fg);
-                text.draw(&mut pm, label, px + 18.0, py + 38.0, 10.0, fg_dim);
+                text.draw_bold(&mut pm, res, px + 10.0, py + 18.0, 10.5, fg);
+                text.draw(&mut pm, label, px + 16.0, py + 33.0, 9.5, fg_dim);
             }
 
-            // 4. Night Shift Toggle
-            let ns_y = cy + 342.0;
-            text.draw_bold(&mut pm, "Night Shift", cx, ns_y + 14.0, 12.5, fg);
-            text.draw(&mut pm, "Снижает нагрузку на глаза, делая цвета теплее", cx, ns_y + 28.0, 10.5, fg_dim);
+            // 4. Status text and [ Применить ] Button
+            let btn_y = sc_y + 74.0;
+            let is_diff = (settings.display.pending_resolution, settings.display.pending_scaling)
+                != (settings.display.resolution, settings.display.scaling);
+            let is_recently_applied = settings
+                .display
+                .applied_feedback
+                .map_or(false, |t| t.elapsed().as_secs() < 3);
+
+            if is_diff {
+                let sel_str = format!(
+                    "Выбрано: {}×{} ({}%)",
+                    settings.display.pending_resolution.0,
+                    settings.display.pending_resolution.1,
+                    settings.display.pending_scaling
+                );
+                text.draw(&mut pm, &sel_str, cx, btn_y + 19.0, 11.0, theme.accent);
+            } else {
+                let cur_str = format!(
+                    "Активен: {}×{} ({}%)",
+                    settings.display.resolution.0,
+                    settings.display.resolution.1,
+                    settings.display.scaling
+                );
+                text.draw(&mut pm, &cur_str, cx, btn_y + 19.0, 11.0, fg_dim);
+            }
+
+            let btn_w = 110.0;
+            let btn_h = 28.0;
+            let btn_x = cx + 250.0;
+            if is_recently_applied {
+                draw_round_rect(&mut pm, btn_x, btn_y, btn_w, btn_h, 6.0, [52, 199, 89, 255]);
+                text.draw_bold(&mut pm, "✓ Применено", btn_x + 13.0, btn_y + 18.0, 11.0, [255, 255, 255, 255]);
+            } else if is_diff {
+                draw_round_rect(&mut pm, btn_x, btn_y, btn_w, btn_h, 6.0, theme.accent);
+                text.draw_bold(&mut pm, "Применить", btn_x + 21.0, btn_y + 18.0, 11.5, [255, 255, 255, 255]);
+            } else {
+                let idle_btn_bg = if dark { [50, 50, 60, 255] } else { [215, 215, 225, 255] };
+                draw_round_rect(&mut pm, btn_x, btn_y, btn_w, btn_h, 6.0, idle_btn_bg);
+                text.draw_bold(&mut pm, "Применить", btn_x + 21.0, btn_y + 18.0, 11.5, fg_dim);
+            }
+
+            // 5. Night Shift Toggle
+            let ns_y = cy + 320.0;
+            text.draw_bold(&mut pm, "Night Shift", cx, ns_y + 14.0, 12.0, fg);
+            text.draw(&mut pm, "Снижает нагрузку на глаза, делая цвета теплее", cx, ns_y + 28.0, 10.0, fg_dim);
             draw_toggle(&mut pm, cx + 316.0, ns_y + 8.0, settings.display.night_shift, theme.accent);
 
-            // 5. Auto Brightness Toggle
-            let ab_y = cy + 392.0;
-            text.draw_bold(&mut pm, "Автоматическая яркость", cx, ab_y + 14.0, 12.5, fg);
-            text.draw(&mut pm, "Плавная адаптация подсветки под окружающий свет", cx, ab_y + 28.0, 10.5, fg_dim);
+            // 6. Auto Brightness Toggle
+            let ab_y = cy + 370.0;
+            text.draw_bold(&mut pm, "Автоматическая яркость", cx, ab_y + 14.0, 12.0, fg);
+            text.draw(&mut pm, "Плавная адаптация подсветки под окружающий свет", cx, ab_y + 28.0, 10.0, fg_dim);
             draw_toggle(&mut pm, cx + 316.0, ab_y + 8.0, settings.display.auto_brightness, theme.accent);
         }
         SettingsTab::Wallpaper => {
@@ -694,5 +902,18 @@ fn stroke_round_rect(pm: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, r: f32, co
             ..Default::default()
         };
         pm.stroke_path(&path, &paint, &stroke, SkTransform::identity(), None);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_detect_display() {
+        let info = detect_display_info();
+        println!("Detected display: {:?}", info);
+        assert!(!info.name.is_empty());
+        assert!(!info.connector.is_empty());
     }
 }

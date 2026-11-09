@@ -227,6 +227,12 @@ impl Shell {
         self.charging = charging;
     }
 
+    pub fn invalidate_cache(&mut self) {
+        self.panel_sig = None;
+        self.dock_sig = None;
+        self.wallpaper_sig = None;
+    }
+
     /// Rebuild any cached shell textures that became stale.
     pub fn ensure(
         &mut self,
