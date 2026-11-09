@@ -59,6 +59,7 @@ pub struct DecoCache {
     windows: HashMap<u32, Deco>,
     lights: HashMap<(bool, bool, bool), MemoryRenderBuffer>,
     pub text: TextRenderer,
+    cursor: Option<MemoryRenderBuffer>,
 }
 
 impl Default for DecoCache {
@@ -67,6 +68,7 @@ impl Default for DecoCache {
             windows: HashMap::new(),
             lights: HashMap::new(),
             text: TextRenderer::new(),
+            cursor: None,
         }
     }
 }
@@ -74,6 +76,10 @@ impl Default for DecoCache {
 impl DecoCache {
     pub fn remove(&mut self, key: u32) {
         self.windows.remove(&key);
+    }
+
+    pub fn cursor(&mut self) -> &MemoryRenderBuffer {
+        self.cursor.get_or_insert_with(default_cursor_buffer)
     }
 
     fn deco(&mut self, key: u32, w: i32, h: i32, title: Option<&str>, focused: bool, is_csd: bool, theme: &Theme) -> &Deco {
@@ -674,8 +680,8 @@ pub fn render(
             }
             Some(smithay::input::pointer::CursorImageStatus::Hidden) => {}
             _ => {
-                // Default macOS style arrow cursor
-                let cursor_buf = default_cursor_buffer();
+                // Default macOS style arrow cursor (cached)
+                let cursor_buf = state.deco.cursor().clone();
                 let pos_phys = Point::<f64, Physical>::from((pos.0, pos.1));
                 if let Ok(elem) = MemoryRenderBufferRenderElement::from_buffer(
                     renderer,

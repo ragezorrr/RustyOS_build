@@ -103,7 +103,18 @@ pub fn run_udev(
     for &conn_handle in res.connectors() {
         let conn_info = drm_device.get_connector(conn_handle, false)?;
         if conn_info.state() == connector::State::Connected {
-            if let Some(mode) = conn_info.modes().first().copied() {
+            let preferred_mode = conn_info
+                .modes()
+                .iter()
+                .find(|m| m.mode_type().contains(smithay::reexports::drm::control::ModeTypeFlags::PREFERRED))
+                .or_else(|| {
+                    // Otherwise pick the mode with the highest refresh rate
+                    conn_info.modes().iter().max_by_key(|m| m.vrefresh())
+                })
+                .copied()
+                .or_else(|| conn_info.modes().first().copied());
+
+            if let Some(mode) = preferred_mode {
                 // Find a free CRTC for this connector
                 let crtc_handle = res.crtcs().iter().find(|crtc| !outputs.contains_key(crtc)).copied();
                 if let Some(crtc) = crtc_handle {
