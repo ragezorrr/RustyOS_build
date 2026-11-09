@@ -30,10 +30,14 @@ use smithay::{
     output::{Mode as OutputMode, Output, PhysicalProperties, Subpixel},
     reexports::{
         calloop::{
+            ping::make_ping,
             timer::{TimeoutAction, Timer},
             EventLoop,
         },
-        drm::control::{connector, crtc, Device as ControlDevice},
+        drm::{
+            buffer::Buffer,
+            control::{connector, crtc, dumbbuffer::DumbBuffer, Device as ControlDevice},
+        },
         gbm::Device as GbmDevice,
         input::Libinput,
         rustix::fs::OFlags,
@@ -48,6 +52,7 @@ pub struct DrmOutput {
     pub output: Output,
     pub damage_tracker: OutputDamageTracker,
     pub frame_pending: bool,
+    pub cursor_buffer: Option<DumbBuffer>,
 }
 
 struct UdevBackend {
@@ -90,7 +95,7 @@ pub fn run_udev(
     let drm_fd = DrmDeviceFd::new(DeviceFd::from(fd));
 
     let (mut drm_device, drm_notifier) = DrmDevice::new(drm_fd.clone(), false)?;
-    let gbm_device = GbmDevice::new(drm_fd)?;
+    let gbm_device = GbmDevice::new(drm_fd.clone())?;
 
     let egl_display = unsafe { EGLDisplay::new(gbm_device.clone())? };
     let egl_context = EGLContext::new(&egl_display)?;
@@ -155,6 +160,61 @@ pub fn run_udev(
                     data.state.space.map_output(&output, (0, 0));
                     let damage_tracker = OutputDamageTracker::from_output(&output);
 
+                    let mut cursor_buffer = None;
+                    if let Ok(mut dumb) = drm_fd.create_dumb_buffer((64, 64), smithay::reexports::drm::buffer::DrmFourcc::Argb8888, 32) {
+                        let pitch = dumb.pitch() as usize;
+                        if let Ok(mut map) = drm_fd.map_dumb_buffer(&mut dumb) {
+                            let mut pm = tiny_skia::Pixmap::new(64, 64).expect("cursor pm");
+                            let mut pb = tiny_skia::PathBuilder::new();
+                            pb.move_to(0.0, 0.0);
+                            pb.line_to(0.0, 18.0);
+                            pb.line_to(4.5, 13.5);
+                            pb.line_to(8.0, 21.0);
+                            pb.line_to(11.0, 19.5);
+                            pb.line_to(7.5, 12.0);
+                            pb.line_to(13.5, 12.0);
+                            pb.close();
+
+                            if let Some(path) = pb.finish() {
+                                let mut stroke_paint = tiny_skia::Paint::default();
+                                stroke_paint.set_color_rgba8(255, 255, 255, 255);
+                                let stroke = tiny_skia::Stroke {
+                                    width: 2.0,
+                                    ..Default::default()
+                                };
+                                pm.stroke_path(&path, &stroke_paint, &stroke, tiny_skia::Transform::identity(), None);
+
+                                let mut fill_paint = tiny_skia::Paint::default();
+                                fill_paint.set_color_rgba8(16, 16, 20, 255);
+                                pm.fill_path(&path, &fill_paint, tiny_skia::FillRule::Winding, tiny_skia::Transform::identity(), None);
+                            }
+
+                            let pm_data = pm.data();
+                            for y in 0..64 {
+                                for x in 0..64 {
+                                    let src_idx = (y * 64 + x) * 4;
+                                    let r = pm_data[src_idx];
+                                    let g = pm_data[src_idx + 1];
+                                    let b = pm_data[src_idx + 2];
+                                    let a = pm_data[src_idx + 3];
+                                    let dst_idx = (y * pitch) + (x * 4);
+                                    if dst_idx + 3 < map.len() {
+                                        map[dst_idx] = b;
+                                        map[dst_idx + 1] = g;
+                                        map[dst_idx + 2] = r;
+                                        map[dst_idx + 3] = a;
+                                    }
+                                }
+                            }
+                        }
+
+                        if drm_fd.set_cursor(crtc, Some(&dumb)).is_ok() {
+                            tracing::info!(?crtc, "Hardware DRM cursor plane enabled successfully");
+                            data.state.hardware_cursor = true;
+                            cursor_buffer = Some(dumb);
+                        }
+                    }
+
                     outputs.insert(
                         crtc,
                         DrmOutput {
@@ -162,6 +222,7 @@ pub fn run_udev(
                             output,
                             damage_tracker,
                             frame_pending: false,
+                            cursor_buffer,
                         },
                     );
                 }
@@ -180,9 +241,29 @@ pub fn run_udev(
     // Register event sources
     let handle = event_loop.handle();
 
-    // Libinput events
-    handle.insert_source(libinput_backend, |event, _, data| {
+    // Create an event-driven redraw signal for instant cursor response
+    let (redraw_ping, redraw_source) = make_ping()?;
+
+    // Libinput events: move hardware cursor plane instantly with 0ms lag
+    let drm_cursor_fd = drm_fd.clone();
+    let redraw_ping_input = redraw_ping.clone();
+    handle.insert_source(libinput_backend, move |event, _, data| {
         data.state.process_input_event(event);
+
+        // Hardware cursor plane instant move (up to 1000Hz polling rate)
+        if data.state.hardware_cursor {
+            if let Some(pointer) = data.state.seat.get_pointer() {
+                let loc = pointer.current_location();
+                let x = loc.x.round() as i32;
+                let y = loc.y.round() as i32;
+                for &crtc in res.crtcs() {
+                    let _ = drm_cursor_fd.move_cursor(crtc, (x, y));
+                }
+            }
+        } else {
+            // Software cursor fallback: wake up renderer immediately on mouse movement
+            redraw_ping_input.ping();
+        }
     })?;
 
     // Session events (VT switch activate/pause)
@@ -322,6 +403,33 @@ pub fn run_udev(
         let _ = data.display_handle.flush_clients();
 
         TimeoutAction::ToDuration(Duration::from_millis(16))
+    })?;
+
+    // Event-driven redraw ping source (fires immediately when mouse moves on software cursor or client commits)
+    let backend_ping = backend.clone();
+    handle.insert_source(redraw_source, move |_, _, data| {
+        if let Ok(mut b) = backend_ping.try_borrow_mut() {
+            let UdevBackend { outputs, renderer } = &mut *b;
+            for drm_out in outputs.values_mut() {
+                if drm_out.frame_pending {
+                    continue;
+                }
+                if let Ok((mut dmabuf, _age)) = drm_out.surface.next_buffer() {
+                    if let Ok(mut target) = renderer.bind(&mut dmabuf) {
+                        let _ = crate::render::render(
+                            &mut data.state,
+                            renderer,
+                            &mut target,
+                            &drm_out.output,
+                            &mut drm_out.damage_tracker,
+                        );
+                    }
+                    if drm_out.surface.queue_buffer(None, None, ()).is_ok() {
+                        drm_out.frame_pending = true;
+                    }
+                }
+            }
+        }
     })?;
 
     tracing::info!("Native DRM/udev event loop running");

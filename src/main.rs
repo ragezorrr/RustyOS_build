@@ -31,6 +31,13 @@ pub struct CalloopData {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var_os("XCURSOR_THEME").is_none() {
+        std::env::set_var("XCURSOR_THEME", "macOS");
+    }
+    if std::env::var_os("XCURSOR_SIZE").is_none() {
+        std::env::set_var("XCURSOR_SIZE", "24");
+    }
+
     if let Ok(env_filter) = tracing_subscriber::EnvFilter::try_from_default_env() {
         tracing_subscriber::fmt().with_env_filter(env_filter).init();
     } else {

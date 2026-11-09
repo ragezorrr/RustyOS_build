@@ -50,6 +50,8 @@ pub struct Aqua {
     pub wifi_menu: crate::wifi::WifiMenuState,
     /// Settings window drag state: (initial_pointer_pos, initial_window_loc)
     pub settings_dragging: Option<(Point<f64, Logical>, Point<i32, Logical>)>,
+    /// Whether hardware cursor is active (managed directly on DRM cursor plane)
+    pub hardware_cursor: bool,
     /// Minimized windows hidden from space: key -> (Window, saved_location)
     pub minimized_windows: std::collections::HashMap<u32, (Window, Point<i32, Logical>)>,
     pub focused_window: Option<Window>,
@@ -136,6 +138,7 @@ impl Aqua {
             stage_manager: crate::desktop_menu::StageManager::default(),
             wifi_menu: crate::wifi::WifiMenuState::default(),
             settings_dragging: None,
+            hardware_cursor: false,
             minimized_windows: std::collections::HashMap::new(),
             focused_window: None,
             maximized: std::collections::HashMap::new(),
@@ -219,6 +222,8 @@ impl Aqua {
         cmd.env("SDL_VIDEODRIVER", "wayland");
         cmd.env("MOZ_ENABLE_WAYLAND", "1");
         cmd.env("ELECTRON_OZONE_PLATFORM_HINT", "auto");
+        cmd.env("XCURSOR_THEME", "macOS");
+        cmd.env("XCURSOR_SIZE", "24");
         // Remove host DISPLAY so clients don't mistakenly open on the host's outer X11 session
         cmd.env_remove("DISPLAY");
     }

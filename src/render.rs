@@ -662,6 +662,7 @@ pub fn render(
     }
 
     // Hardware/Software mouse cursor for native sessions (TTY/DRM)
+    // If hardware_cursor is enabled in DRM, skip rendering software cursor in framebuffer
     if let Some(pos) = pointer_pos {
         let cursor_status = state.cursor_status.lock().ok().map(|s| s.clone());
         match cursor_status {
@@ -680,19 +681,22 @@ pub fn render(
             }
             Some(smithay::input::pointer::CursorImageStatus::Hidden) => {}
             _ => {
-                // Default macOS style arrow cursor (cached)
-                let cursor_buf = state.deco.cursor().clone();
-                let pos_phys = Point::<f64, Logical>::from((pos.0, pos.1)).to_physical_precise_round(scale_s);
-                if let Ok(elem) = MemoryRenderBufferRenderElement::from_buffer(
-                    renderer,
-                    pos_phys,
-                    &cursor_buf,
-                    None,
-                    None,
-                    None,
-                    Kind::Unspecified,
-                ) {
-                    elements.push(AquaRenderElement::Memory(elem));
+                // If DRM hardware cursor plane is active, the GPU draws it with 0-lag.
+                // Otherwise fall back to drawing it in the framebuffer.
+                if !state.hardware_cursor {
+                    let cursor_buf = state.deco.cursor().clone();
+                    let pos_phys = Point::<f64, Logical>::from((pos.0, pos.1)).to_physical_precise_round(scale_s);
+                    if let Ok(elem) = MemoryRenderBufferRenderElement::from_buffer(
+                        renderer,
+                        pos_phys,
+                        &cursor_buf,
+                        None,
+                        None,
+                        None,
+                        Kind::Unspecified,
+                    ) {
+                        elements.push(AquaRenderElement::Memory(elem));
+                    }
                 }
             }
         }
@@ -1144,18 +1148,17 @@ fn default_cursor_buffer() -> MemoryRenderBuffer {
     pb.close();
 
     if let Some(path) = pb.finish() {
-        // Black outline / shadow
+        // macOS cursor: white outline with sleek black fill
         let mut stroke_paint = tiny_skia::Paint::default();
-        stroke_paint.set_color_rgba8(20, 20, 25, 230);
+        stroke_paint.set_color_rgba8(255, 255, 255, 255);
         let stroke = tiny_skia::Stroke {
             width: 2.0,
             ..Default::default()
         };
         pm.stroke_path(&path, &stroke_paint, &stroke, tiny_skia::Transform::identity(), None);
 
-        // Crisp white fill
         let mut fill_paint = tiny_skia::Paint::default();
-        fill_paint.set_color_rgba8(255, 255, 255, 255);
+        fill_paint.set_color_rgba8(16, 16, 20, 255);
         pm.fill_path(&path, &fill_paint, tiny_skia::FillRule::Winding, tiny_skia::Transform::identity(), None);
     }
 
