@@ -639,6 +639,43 @@ pub fn render(
         }
     }
 
+    // Hardware/Software mouse cursor for native sessions (TTY/DRM)
+    if let Some(pos) = pointer_pos {
+        let cursor_status = state.cursor_status.lock().ok().map(|s| s.clone());
+        match cursor_status {
+            Some(smithay::input::pointer::CursorImageStatus::Surface(ref surface)) => {
+                let loc_phys = Point::<f64, Logical>::from((pos.0, pos.1)).to_physical_precise_round(scale_s);
+                let surface_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+                    smithay::backend::renderer::element::surface::render_elements_from_surface_tree(
+                        renderer,
+                        surface,
+                        loc_phys,
+                        scale_s,
+                        1.0,
+                        Kind::Unspecified,
+                    );
+                elements.extend(surface_elements.into_iter().map(AquaRenderElement::Surface));
+            }
+            Some(smithay::input::pointer::CursorImageStatus::Hidden) => {}
+            _ => {
+                // Default macOS style arrow cursor
+                let cursor_buf = default_cursor_buffer();
+                let pos_phys = Point::<f64, Physical>::from((pos.0, pos.1));
+                if let Ok(elem) = MemoryRenderBufferRenderElement::from_buffer(
+                    renderer,
+                    pos_phys,
+                    &cursor_buf,
+                    None,
+                    None,
+                    None,
+                    Kind::Unspecified,
+                ) {
+                    elements.push(AquaRenderElement::Memory(elem));
+                }
+            }
+        }
+    }
+
     let clear = state.shell.theme.wallpaper_bottom();
     let clear = [
         clear[0] as f32 / 255.0,
@@ -1070,3 +1107,42 @@ fn stroke_round(
 /// Unused rectangle helper kept for future decoration work.
 #[allow(dead_code)]
 fn _rect(_: Rectangle<i32, Logical>) {}
+
+fn default_cursor_buffer() -> MemoryRenderBuffer {
+    let mut pm = tiny_skia::Pixmap::new(24, 24).expect("cursor pixmap");
+    // Draw macOS-like sleek black & white cursor arrow
+    let mut pb = tiny_skia::PathBuilder::new();
+    pb.move_to(0.0, 0.0);
+    pb.line_to(0.0, 18.0);
+    pb.line_to(4.5, 13.5);
+    pb.line_to(8.0, 21.0);
+    pb.line_to(11.0, 19.5);
+    pb.line_to(7.5, 12.0);
+    pb.line_to(13.5, 12.0);
+    pb.close();
+
+    if let Some(path) = pb.finish() {
+        // Black outline / shadow
+        let mut stroke_paint = tiny_skia::Paint::default();
+        stroke_paint.set_color_rgba8(20, 20, 25, 230);
+        let stroke = tiny_skia::Stroke {
+            width: 2.0,
+            ..Default::default()
+        };
+        pm.stroke_path(&path, &stroke_paint, &stroke, tiny_skia::Transform::identity(), None);
+
+        // Crisp white fill
+        let mut fill_paint = tiny_skia::Paint::default();
+        fill_paint.set_color_rgba8(255, 255, 255, 255);
+        pm.fill_path(&path, &fill_paint, tiny_skia::FillRule::Winding, tiny_skia::Transform::identity(), None);
+    }
+
+    MemoryRenderBuffer::from_slice(
+        pm.data(),
+        Fourcc::Abgr8888,
+        (24, 24),
+        1,
+        Transform::Normal,
+        None,
+    )
+}

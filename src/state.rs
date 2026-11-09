@@ -75,6 +75,7 @@ pub struct Aqua {
     pub popups: PopupManager,
 
     pub seat: Seat<Self>,
+    pub cursor_status: std::sync::Arc<std::sync::Mutex<smithay::input::pointer::CursorImageStatus>>,
 }
 
 impl Aqua {
@@ -153,6 +154,7 @@ impl Aqua {
             data_device_state,
             popups,
             seat,
+            cursor_status: std::sync::Arc::new(std::sync::Mutex::new(smithay::input::pointer::CursorImageStatus::default_named())),
         }
     }
 
