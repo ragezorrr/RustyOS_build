@@ -183,18 +183,51 @@ impl Theme {
 
     pub fn dock_bg(&self) -> [u8; 4] {
         if self.dark() {
-            // Slightly more opaque dark glass, matches Sequoia
-            [28, 28, 36, 170]
+            // macOS Sequoia dark translucent glass
+            [26, 26, 34, 160]
         } else {
-            [255, 255, 255, 150]
+            // macOS Sequoia light translucent frosted glass
+            [255, 255, 255, 145]
         }
     }
 
     pub fn dock_border(&self) -> [u8; 4] {
         if self.dark() {
-            [255, 255, 255, 45]
+            [255, 255, 255, 38]
+        } else {
+            [0, 0, 0, 24]
+        }
+    }
+
+    pub fn dock_top_rim(&self) -> [u8; 4] {
+        if self.dark() {
+            [255, 255, 255, 52]
+        } else {
+            [255, 255, 255, 140]
+        }
+    }
+
+    pub fn dock_indicator(&self) -> [u8; 4] {
+        if self.dark() {
+            [255, 255, 255, 230]
+        } else {
+            [30, 30, 35, 210]
+        }
+    }
+
+    pub fn dock_indicator_glow(&self) -> [u8; 4] {
+        if self.dark() {
+            [255, 255, 255, 60]
         } else {
             [0, 0, 0, 30]
+        }
+    }
+
+    pub fn dock_separator(&self) -> ([u8; 4], [u8; 4]) {
+        if self.dark() {
+            ([0, 0, 0, 45], [255, 255, 255, 30])
+        } else {
+            ([0, 0, 0, 35], [255, 255, 255, 90])
         }
     }
 

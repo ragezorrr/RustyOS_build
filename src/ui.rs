@@ -783,48 +783,81 @@ impl Shell {
 
         let glass_y = DOCK_HEADROOM as f32;
         let glass_h = dock_h as f32;
+        // Plate corner radius: ~ icon * 0.35 according to macOS design guidelines
+        let plate_radius = (icon_size as f32 * 0.36).round().clamp(14.0, 24.0);
 
-        // Glass background with subtle drop shadow
-        for i in (0..4).rev() {
-            let s_pad = (i + 1) as f32 * 1.5;
-            let alpha = (12 - i * 3) as u8;
-            rounded_rect(
+        // Multi-layer physical soft drop shadow for elevation
+        let shadow_steps = 6;
+        for i in (0..shadow_steps).rev() {
+            let s_pad = (i + 1) as f32 * 1.6;
+            let y_off = 2.0 + (i as f32 * 1.1);
+            let alpha = match i {
+                0 => 22,
+                1 => 16,
+                2 => 11,
+                3 => 7,
+                4 => 4,
+                _ => 2,
+            };
+            squircle_rect(
                 &mut pm,
                 0.5 - s_pad,
-                glass_y + 2.0,
+                glass_y + y_off,
                 dw as f32 - 1.0 + s_pad * 2.0,
                 glass_h - 1.0 + s_pad,
-                18.0,
+                plate_radius + s_pad,
                 [0, 0, 0, alpha],
             );
         }
 
-        // Glass plate body
-        rounded_rect(&mut pm, 0.5, glass_y + 0.5, dw as f32 - 1.0, glass_h - 1.0, 16.0, t.dock_bg());
-        stroke_rounded(
+        // Glass plate body with frosted appearance
+        squircle_rect(
             &mut pm,
             0.5,
             glass_y + 0.5,
             dw as f32 - 1.0,
             glass_h - 1.0,
-            16.0,
+            plate_radius,
+            t.dock_bg(),
+        );
+
+        // Perimeter border
+        stroke_squircle(
+            &mut pm,
+            0.5,
+            glass_y + 0.5,
+            dw as f32 - 1.0,
+            glass_h - 1.0,
+            plate_radius,
             t.dock_border(),
             1.0,
         );
-        // Top highlight
-        stroke_rounded(
+
+        // Top edge inner specular rim highlight (Sequoia glass)
+        stroke_squircle(
             &mut pm,
             1.5,
             glass_y + 1.5,
             dw as f32 - 3.0,
             glass_h - 3.0,
-            15.0,
-            if t.dark() {
-                [255, 255, 255, 22]
-            } else {
-                [255, 255, 255, 90]
-            },
+            (plate_radius - 1.0).max(1.0),
+            t.dock_top_rim(),
             1.0,
+        );
+
+        // Bottom bounce specular reflection hairline
+        let bottom_rim_col = if t.dark() {
+            [255, 255, 255, 12]
+        } else {
+            [255, 255, 255, 60]
+        };
+        fill_rect(
+            &mut pm,
+            plate_radius * 0.8,
+            glass_y + glass_h - 2.0,
+            dw as f32 - plate_radius * 1.6,
+            1.0,
+            bottom_rim_col,
         );
 
         let mut hovered_app = None;
@@ -863,16 +896,21 @@ impl Shell {
 
             // Running indicator dot
             if dock_cfg.show_indicators && running[i] {
+                // Subtle dot glow
+                fill_circle(
+                    &mut pm,
+                    center_x,
+                    glass_y + glass_h - 6.5,
+                    3.2,
+                    t.dock_indicator_glow(),
+                );
+                // Crisp core dot
                 fill_circle(
                     &mut pm,
                     center_x,
                     glass_y + glass_h - 6.5,
                     2.0,
-                    if t.dark() {
-                        [240, 240, 245, 230]
-                    } else {
-                        [40, 40, 45, 200]
-                    },
+                    t.dock_indicator(),
                 );
             }
         }
@@ -897,26 +935,26 @@ impl Shell {
                     &mut pm,
                     center_x,
                     glass_y + glass_h - 6.5,
+                    3.2,
+                    t.dock_indicator_glow(),
+                );
+                fill_circle(
+                    &mut pm,
+                    center_x,
+                    glass_y + glass_h - 6.5,
                     2.0,
-                    if t.dark() {
-                        [240, 240, 245, 230]
-                    } else {
-                        [40, 40, 45, 200]
-                    },
+                    t.dock_indicator(),
                 );
             }
         }
 
-        // Vertical separator line
+        // Vertical separator line (dual-line etched groove)
         let left_count = APPS.len() + dynamic_apps.len();
         let apps_w = left_count as i32 * icon_size + (left_count as i32 - 1) * gap;
         let sep_x = (DOCK_PAD + apps_w + 8) as f32;
-        let sep_color = if t.dark() {
-            [255u8, 255, 255, 30]
-        } else {
-            [0u8, 0, 0, 35]
-        };
-        fill_rect(&mut pm, sep_x, glass_y + 12.0, 1.0, glass_h - 24.0, sep_color);
+        let (sep_dark, sep_light) = t.dock_separator();
+        fill_rect(&mut pm, sep_x, glass_y + 11.0, 1.0, glass_h - 22.0, sep_dark);
+        fill_rect(&mut pm, sep_x + 1.0, glass_y + 11.0, 1.0, glass_h - 22.0, sep_light);
 
         // 3. Minimized window thumbnails (right of separator)
         for (i, min_item) in minimized_items.iter().enumerate() {
@@ -959,28 +997,40 @@ impl Shell {
 
         // Draw elegant tooltip floating cleanly ABOVE the dock glass
         if let Some((name, cx)) = hovered_app {
-            let tw = self.text.width(&name, 11.0);
-            let tip_w = tw + 18.0;
-            let tip_h = 22.0;
+            let tw = self.text.width(&name, 11.5);
+            let tip_w = (tw + 20.0).max(36.0);
+            let tip_h = 24.0;
             let tip_x = (cx - tip_w / 2.0).clamp(4.0, dw as f32 - tip_w - 4.0);
             // Floating 8px above the dock glass plate
-            let tip_y = glass_y - tip_h - 6.0;
+            let tip_y = glass_y - tip_h - 7.0;
 
             let tip_bg = if t.dark() {
-                [32, 32, 38, 230]
+                [30, 30, 38, 235]
             } else {
-                [248, 248, 252, 235]
+                [248, 248, 252, 240]
             };
-            // Subtle tooltip shadow
-            rounded_rect(&mut pm, tip_x, tip_y + 1.0, tip_w, tip_h, 6.0, [0, 0, 0, 25]);
-            rounded_rect(&mut pm, tip_x, tip_y, tip_w, tip_h, 6.0, tip_bg);
-            stroke_rounded(&mut pm, tip_x, tip_y, tip_w, tip_h, 6.0, t.dock_border(), 0.8);
+            // Layered tooltip shadow
+            squircle_rect(&mut pm, tip_x, tip_y + 1.5, tip_w, tip_h, 7.0, [0, 0, 0, 30]);
+            squircle_rect(&mut pm, tip_x, tip_y + 0.5, tip_w, tip_h, 7.0, [0, 0, 0, 18]);
+            squircle_rect(&mut pm, tip_x, tip_y, tip_w, tip_h, 7.0, tip_bg);
+            stroke_squircle(&mut pm, tip_x, tip_y, tip_w, tip_h, 7.0, t.dock_border(), 0.8);
+            // Tooltip top edge highlight
+            stroke_squircle(
+                &mut pm,
+                tip_x + 0.5,
+                tip_y + 0.5,
+                tip_w - 1.0,
+                tip_h - 1.0,
+                6.5,
+                if t.dark() { [255, 255, 255, 30] } else { [255, 255, 255, 90] },
+                0.8,
+            );
             self.text.draw(
                 &mut pm,
                 &name,
-                tip_x + 9.0,
-                tip_y + 15.5,
-                11.0,
+                tip_x + 10.0,
+                tip_y + 16.5,
+                11.5,
                 t.menubar_fg(),
             );
         }
@@ -1000,19 +1050,27 @@ impl Shell {
     fn draw_app_icon(&self, pm: &mut Pixmap, x: f32, y: f32, size: f32, app: &AppDef) {
         let xf = x;
         let yf = y;
-        let radius = 11.0 * (size / ICON as f32);
+        // macOS squircle curvature: ~22.5% of icon size
+        let radius = (size * 0.225).round().max(4.0);
 
-        // Drop shadow.
-        for i in (0..5).rev() {
-            let grow = i as f32 * 1.2;
-            rounded_rect(
+        // Multi-stage realistic icon drop shadow
+        for i in (0..4).rev() {
+            let grow = (i + 1) as f32 * 1.0;
+            let y_off = 1.0 + (i as f32 * 0.8);
+            let alpha = match i {
+                0 => 18,
+                1 => 12,
+                2 => 7,
+                _ => 3,
+            };
+            squircle_rect(
                 pm,
                 xf - grow,
-                yf - grow + 2.0,
+                yf - grow + y_off,
                 size + grow * 2.0,
                 size + grow * 2.0,
                 radius + grow,
-                [0, 0, 0, 10],
+                [0, 0, 0, alpha],
             );
         }
 
@@ -1045,18 +1103,18 @@ impl Shell {
         .expect("icon gradient");
         let mut paint = Paint::default();
         paint.shader = shader;
-        let path = round_rect_path(xf, yf, size, size, radius);
+        let path = squircle_path(xf, yf, size, size, radius);
         pm.fill_path(&path, &paint, FillRule::Winding, SkTransform::identity(), None);
 
-        // Inner top highlight.
-        stroke_rounded(
+        // Inner top specular highlight rim
+        stroke_squircle(
             pm,
-            xf + 1.0,
-            yf + 1.0,
-            size - 2.0,
-            size - 2.0,
-            (radius - 1.0).max(1.0),
-            [255, 255, 255, 40],
+            xf + 0.8,
+            yf + 0.8,
+            size - 1.6,
+            size - 1.6,
+            (radius - 0.8).max(1.0),
+            [255, 255, 255, 48],
             1.0,
         );
 
@@ -1180,19 +1238,26 @@ impl Shell {
     }
 
     fn draw_dynamic_app_icon(&self, pm: &mut Pixmap, xf: f32, yf: f32, size: f32, app: &DynamicApp) {
-        let radius = 11.0 * (size / ICON as f32);
+        let radius = (size * 0.225).round().max(4.0);
 
-        // Drop shadow
-        for i in (0..5).rev() {
-            let grow = i as f32 * 1.2;
-            rounded_rect(
+        // Multi-stage realistic icon drop shadow
+        for i in (0..4).rev() {
+            let grow = (i + 1) as f32 * 1.0;
+            let y_off = 1.0 + (i as f32 * 0.8);
+            let alpha = match i {
+                0 => 18,
+                1 => 12,
+                2 => 7,
+                _ => 3,
+            };
+            squircle_rect(
                 pm,
                 xf - grow,
-                yf - grow + 2.0,
+                yf - grow + y_off,
                 size + grow * 2.0,
                 size + grow * 2.0,
                 radius + grow,
-                [0, 0, 0, 10],
+                [0, 0, 0, alpha],
             );
         }
 
@@ -1230,11 +1295,11 @@ impl Shell {
 
         let mut paint = Paint::default();
         paint.shader = shader;
-        let path = round_rect_path(xf, yf, size, size, radius);
+        let path = squircle_path(xf, yf, size, size, radius);
         pm.fill_path(&path, &paint, FillRule::Winding, SkTransform::identity(), None);
 
         // Glass rim highlight
-        stroke_rounded(pm, xf + 1.0, yf + 1.0, size - 2.0, size - 2.0, (radius - 1.0).max(1.0), [255, 255, 255, 45], 1.0);
+        stroke_squircle(pm, xf + 0.8, yf + 0.8, size - 1.6, size - 1.6, (radius - 0.8).max(1.0), [255, 255, 255, 48], 1.0);
 
         let scale = size / ICON as f32;
 
@@ -1279,21 +1344,28 @@ impl Shell {
         let ry = yf + size - h - 2.0;
         let r = 7.0 * scale;
 
-        // Shadow
+        // Soft elevation shadow
         for i in (0..4).rev() {
-            let grow = i as f32 * 1.5;
-            rounded_rect(pm, rx - grow, ry - grow + 2.0, w + grow * 2.0, h + grow * 2.0, r + grow, [0, 0, 0, 15]);
+            let grow = (i + 1) as f32 * 1.0;
+            let y_off = 1.0 + (i as f32 * 0.8);
+            let alpha = match i {
+                0 => 20,
+                1 => 13,
+                2 => 7,
+                _ => 3,
+            };
+            squircle_rect(pm, rx - grow, ry - grow + y_off, w + grow * 2.0, h + grow * 2.0, r + grow, [0, 0, 0, alpha]);
         }
 
         // Window plate body
         let body_col = if self.theme.dark() { [34u8, 36, 44, 245] } else { [245u8, 246, 250, 245] };
-        rounded_rect(pm, rx, ry, w, h, r, body_col);
-        stroke_rounded(pm, rx, ry, w, h, r, [255, 255, 255, 35], 1.0);
+        squircle_rect(pm, rx, ry, w, h, r, body_col);
+        stroke_squircle(pm, rx, ry, w, h, r, [255, 255, 255, 35], 1.0);
 
         // Titlebar
         let tb_h = 10.0 * scale;
         let tb_col = if self.theme.dark() { [28u8, 30, 38, 255] } else { [230u8, 232, 238, 255] };
-        rounded_rect(pm, rx, ry, w, tb_h, r, tb_col);
+        squircle_rect(pm, rx, ry, w, tb_h, r, tb_col);
         fill_rect(pm, rx, ry + tb_h - 1.0, w, 1.0, [255, 255, 255, 15]);
 
         // Mini traffic lights (3 tiny dots)
@@ -1358,6 +1430,133 @@ fn round_rect_path(x: f32, y: f32, w: f32, h: f32, r: f32) -> tiny_skia::Path {
     pb.cubic_to(x, y + r - k, x + r - k, y, x + r, y);
     pb.close();
     pb.finish().expect("round rect path")
+}
+
+/// Squircle (Apple continuous corner superellipse curvature approximation).
+/// Uses smooth cubic Bézier handles with extended transition zones for continuous curvature (G2-like feel).
+pub fn squircle_path(x: f32, y: f32, w: f32, h: f32, r: f32) -> tiny_skia::Path {
+    let r = r.min(w / 2.0).min(h / 2.0);
+    if r <= 0.0 {
+        let mut pb = PathBuilder::new();
+        pb.move_to(x, y);
+        pb.line_to(x + w, y);
+        pb.line_to(x + w, y + h);
+        pb.line_to(x, y + h);
+        pb.close();
+        return pb.finish().expect("rect path");
+    }
+
+    // Extended transition distance matching Apple squircle formula (a = 1.5286 * r)
+    let d = (r * 1.5286).min(w / 2.0).min(h / 2.0);
+    let mut pb = PathBuilder::new();
+
+    // Top edge & top-right squircle corner
+    pb.move_to(x + d, y);
+    pb.line_to(x + w - d, y);
+    pb.cubic_to(
+        x + w - d + 0.504 * d,
+        y,
+        x + w - d + 0.741 * d,
+        y + 0.052 * d,
+        x + w - d + 0.886 * d,
+        y + 0.197 * d,
+    );
+    pb.cubic_to(
+        x + w - 0.052 * d,
+        y + d - 0.741 * d,
+        x + w,
+        y + d - 0.504 * d,
+        x + w,
+        y + d,
+    );
+
+    // Right edge & bottom-right squircle corner
+    pb.line_to(x + w, y + h - d);
+    pb.cubic_to(
+        x + w,
+        y + h - d + 0.504 * d,
+        x + w - 0.052 * d,
+        y + h - d + 0.741 * d,
+        x + w - d + 0.886 * d,
+        y + h - d + 0.886 * d,
+    );
+    pb.cubic_to(
+        x + w - d + 0.741 * d,
+        y + h - 0.052 * d,
+        x + w - d + 0.504 * d,
+        y + h,
+        x + w - d,
+        y + h,
+    );
+
+    // Bottom edge & bottom-left squircle corner
+    pb.line_to(x + d, y + h);
+    pb.cubic_to(
+        x + d - 0.504 * d,
+        y + h,
+        x + d - 0.741 * d,
+        y + h - 0.052 * d,
+        x + d - 0.886 * d,
+        y + h - d + 0.886 * d,
+    );
+    pb.cubic_to(
+        x + 0.052 * d,
+        y + h - d + 0.741 * d,
+        x,
+        y + h - d + 0.504 * d,
+        x,
+        y + h - d,
+    );
+
+    // Left edge & top-left squircle corner
+    pb.line_to(x, y + d);
+    pb.cubic_to(
+        x,
+        y + d - 0.504 * d,
+        x + 0.052 * d,
+        y + d - 0.741 * d,
+        x + d - 0.886 * d,
+        y + d - 0.886 * d,
+    );
+    pb.cubic_to(
+        x + d - 0.741 * d,
+        y + 0.052 * d,
+        x + d - 0.504 * d,
+        y,
+        x + d,
+        y,
+    );
+
+    pb.close();
+    pb.finish().unwrap_or_else(|| round_rect_path(x, y, w, h, r))
+}
+
+pub fn squircle_rect(pm: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, r: f32, color: [u8; 4]) {
+    let path = squircle_path(x, y, w, h, r);
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(color[0], color[1], color[2], color[3]);
+    pm.fill_path(&path, &paint, FillRule::Winding, SkTransform::identity(), None);
+}
+
+pub fn stroke_squircle(
+    pm: &mut Pixmap,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    r: f32,
+    color: [u8; 4],
+    width: f32,
+) {
+    let path = squircle_path(x, y, w, h, r);
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(color[0], color[1], color[2], color[3]);
+    let stroke = Stroke {
+        width,
+        line_cap: LineCap::Round,
+        ..Default::default()
+    };
+    pm.stroke_path(&path, &paint, &stroke, SkTransform::identity(), None);
 }
 
 fn fill_rect(pm: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, color: [u8; 4]) {
