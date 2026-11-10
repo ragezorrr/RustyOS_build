@@ -824,7 +824,8 @@ pub fn render(
                 // Otherwise fall back to drawing it in the framebuffer.
                 if !state.hardware_cursor {
                     let cursor_buf = state.deco.cursor().clone();
-                    let pos_phys = Point::<f64, Logical>::from((pos.0, pos.1)).to_physical_precise_round(scale_s);
+                    // Offset by default cursor hotspot (1.0, 1.0) so the tip aligns precisely with pointer coordinates
+                    let pos_phys = Point::<f64, Logical>::from((pos.0 - 1.0, pos.1 - 1.0)).to_physical_precise_round(scale_s);
                     if let Ok(elem) = MemoryRenderBufferRenderElement::from_buffer(
                         renderer,
                         pos_phys,

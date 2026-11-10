@@ -109,6 +109,19 @@ pub fn run_udev(
     let egl_context = EGLContext::new(&egl_display)?;
     let renderer = unsafe { GlesRenderer::new(egl_context)? };
 
+    // Initialize Linux DMABUF global for hardware video decoding (mpv, Chrome, Firefox)
+    if let Ok(dev_id) = drm_fd.dev_id() {
+        let render_formats = renderer.dmabuf_formats().into_iter().collect::<Vec<_>>();
+        if let Ok(feedback) = smithay::wayland::dmabuf::DmabufFeedbackBuilder::new(dev_id, render_formats).build() {
+            let global = data.state.dmabuf_state.create_global_with_default_feedback::<Aqua>(
+                &data.display_handle,
+                &feedback,
+            );
+            data.state.dmabuf_global = Some(global);
+            tracing::info!("Linux DMABUF global initialized with zero-copy feedback");
+        }
+    }
+
     let mut outputs: HashMap<crtc::Handle, DrmOutput> = HashMap::new();
 
     // 3. Scan connectors and setup outputs

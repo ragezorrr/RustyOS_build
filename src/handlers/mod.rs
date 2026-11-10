@@ -12,6 +12,8 @@ use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::Resource;
 use smithay::wayland::fractional_scale::{with_fractional_scale, FractionalScaleHandler};
+use smithay::wayland::dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier};
+use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::wayland::idle_inhibit::IdleInhibitHandler;
 use smithay::wayland::output::OutputHandler;
 use smithay::wayland::selection::data_device::{
@@ -28,7 +30,7 @@ use smithay::wayland::xdg_activation::{
     XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
 };
 use smithay::{
-    delegate_data_device, delegate_fractional_scale, delegate_idle_inhibit, delegate_output,
+    delegate_data_device, delegate_dmabuf, delegate_fractional_scale, delegate_idle_inhibit, delegate_output,
     delegate_primary_selection, delegate_seat, delegate_session_lock, delegate_viewporter,
     delegate_xdg_activation,
 };
@@ -177,3 +179,19 @@ impl SessionLockHandler for Aqua {
     }
 }
 delegate_session_lock!(Aqua);
+
+//
+// Linux DMABUF
+//
+
+impl DmabufHandler for Aqua {
+    fn dmabuf_state(&mut self) -> &mut DmabufState {
+        &mut self.dmabuf_state
+    }
+
+    fn dmabuf_imported(&mut self, _global: &DmabufGlobal, _dmabuf: Dmabuf, notifier: ImportNotifier) {
+        // BufferHandler / GlesRenderer automatically imports dmabuf during render passes
+        let _ = notifier.successful::<Aqua>();
+    }
+}
+delegate_dmabuf!(Aqua);

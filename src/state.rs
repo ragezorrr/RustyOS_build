@@ -14,6 +14,7 @@ use smithay::{
     utils::{Logical, Point},
     wayland::{
         compositor::{CompositorClientState, CompositorState},
+        dmabuf::{DmabufGlobal, DmabufState},
         fractional_scale::FractionalScaleManagerState,
         idle_inhibit::IdleInhibitManagerState,
         output::OutputManagerState,
@@ -92,6 +93,8 @@ pub struct Aqua {
     pub viewporter_state: ViewporterState,
     pub xdg_activation_state: XdgActivationState,
     pub layer_shell_state: WlrLayerShellState,
+    pub dmabuf_state: DmabufState,
+    pub dmabuf_global: Option<DmabufGlobal>,
     pub idle_inhibit_state: IdleInhibitManagerState,
     pub session_lock_state: SessionLockManagerState,
     pub popups: PopupManager,
@@ -119,6 +122,7 @@ impl Aqua {
         let viewporter_state = ViewporterState::new::<Self>(&dh);
         let xdg_activation_state = XdgActivationState::new::<Self>(&dh);
         let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
+        let dmabuf_state = DmabufState::new();
         let idle_inhibit_state = IdleInhibitManagerState::new::<Self>(&dh);
         let session_lock_state = SessionLockManagerState::new::<Self, _>(&dh, |_| true);
         let popups = PopupManager::default();
@@ -193,6 +197,8 @@ impl Aqua {
             viewporter_state,
             xdg_activation_state,
             layer_shell_state,
+            dmabuf_state,
+            dmabuf_global: None,
             idle_inhibit_state,
             session_lock_state,
             popups,
