@@ -105,7 +105,7 @@ impl Aqua {
             model: "",
             layout: "us,ru",
             variant: "",
-            options: Some("grp:alt_shift_toggle,grp:win_space_toggle".to_string()),
+            options: Some("grp:alt_shift_toggle".to_string()),
         };
         seat.add_keyboard(xkb_config, 200, 25).unwrap();
 

@@ -35,6 +35,7 @@ impl Aqua {
                     time,
                     |state, modifiers, keysym| {
                         let sym = keysym.modified_sym().raw();
+                        let raw_sym = keysym.raw_latin_sym_or_raw_current_sym().map(|s| s.raw()).unwrap_or(sym);
 
                         // 1. Spotlight keyboard handling
                         if state.spotlight.open {
@@ -64,7 +65,7 @@ impl Aqua {
                                         return FilterResult::Intercept(());
                                     }
                                     _ => {
-                                        // Printable characters
+                                        // Printable characters (works in any layout: Russian, English, etc.)
                                         if let Some(c) = char::from_u32(sym) {
                                             if !c.is_control() {
                                                 state.spotlight.input_char(c);
@@ -77,31 +78,30 @@ impl Aqua {
                             return FilterResult::Intercept(());
                         }
 
-                        // 2. Global Shortcuts
+                        // 2. Global Shortcuts (layout-agnostic using raw_sym and sym)
                         if pressed && modifiers.logo {
-                            if sym == keysyms::KEY_space {
+                            if sym == keysyms::KEY_space || raw_sym == keysyms::KEY_space {
                                 state.spotlight.toggle();
                                 return FilterResult::Intercept(());
                             }
 
                             if modifiers.shift
-                                && (sym == keysyms::KEY_d || sym == keysyms::KEY_D)
+                                && (raw_sym == keysyms::KEY_d || raw_sym == keysyms::KEY_D || sym == keysyms::KEY_d || sym == keysyms::KEY_D)
                             {
                                 state.toggle_theme();
                                 tracing::info!("appearance toggled");
                                 return FilterResult::Intercept(());
                             }
 
-                            match sym {
-                                keysyms::KEY_q | keysyms::KEY_Q => {
-                                    state.close_focused();
-                                    return FilterResult::Intercept(());
-                                }
-                                keysyms::KEY_Return | keysyms::KEY_KP_Enter => {
-                                    state.spawn("konsole");
-                                    return FilterResult::Intercept(());
-                                }
-                                keysyms::KEY_Tab => {
+                            if raw_sym == keysyms::KEY_q || raw_sym == keysyms::KEY_Q || sym == keysyms::KEY_q || sym == keysyms::KEY_Q {
+                                state.close_focused();
+                                return FilterResult::Intercept(());
+                            }
+                            if raw_sym == keysyms::KEY_Return || raw_sym == keysyms::KEY_KP_Enter || sym == keysyms::KEY_Return || sym == keysyms::KEY_KP_Enter {
+                                state.spawn("konsole");
+                                return FilterResult::Intercept(());
+                            }
+                            if raw_sym == keysyms::KEY_Tab || sym == keysyms::KEY_Tab {
                                     // App Switcher (Cmd+Tab or Alt+Tab)
                                     let mut items = Vec::new();
                                     for w in state.space.elements() {
@@ -122,12 +122,10 @@ impl Aqua {
                                     state.switcher.open_or_next(items);
                                     return FilterResult::Intercept(());
                                 }
-                                _ => {}
                             }
-                        }
 
-                        // Also support Alt+Tab
-                        if pressed && modifiers.alt && sym == keysyms::KEY_Tab {
+                            // Also support Alt+Tab
+                            if pressed && modifiers.alt && (sym == keysyms::KEY_Tab || raw_sym == keysyms::KEY_Tab) {
                             let mut items = Vec::new();
                             for w in state.space.elements() {
                                 let key = crate::render::window_key(w).unwrap_or(0);
