@@ -1,4 +1,5 @@
 mod compositor;
+pub mod layer_shell;
 mod xdg_shell;
 
 use crate::Aqua;
@@ -11,6 +12,7 @@ use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::Resource;
 use smithay::wayland::fractional_scale::{with_fractional_scale, FractionalScaleHandler};
+use smithay::wayland::idle_inhibit::IdleInhibitHandler;
 use smithay::wayland::output::OutputHandler;
 use smithay::wayland::selection::data_device::{
     set_data_device_focus, ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
@@ -19,12 +21,16 @@ use smithay::wayland::selection::primary_selection::{
     set_primary_focus, PrimarySelectionHandler, PrimarySelectionState,
 };
 use smithay::wayland::selection::SelectionHandler;
+use smithay::wayland::session_lock::{
+    LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker,
+};
 use smithay::wayland::xdg_activation::{
     XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
 };
 use smithay::{
-    delegate_data_device, delegate_fractional_scale, delegate_output, delegate_primary_selection,
-    delegate_seat, delegate_viewporter, delegate_xdg_activation,
+    delegate_data_device, delegate_fractional_scale, delegate_idle_inhibit, delegate_output,
+    delegate_primary_selection, delegate_seat, delegate_session_lock, delegate_viewporter,
+    delegate_xdg_activation,
 };
 
 impl SeatHandler for Aqua {
@@ -140,3 +146,34 @@ impl XdgActivationHandler for Aqua {
     }
 }
 delegate_xdg_activation!(Aqua);
+
+//
+// Idle Inhibit
+//
+
+impl IdleInhibitHandler for Aqua {
+    fn inhibit(&mut self, _surface: WlSurface) {}
+    fn uninhibit(&mut self, _surface: WlSurface) {}
+}
+delegate_idle_inhibit!(Aqua);
+
+//
+// Session Lock
+//
+
+impl SessionLockHandler for Aqua {
+    fn lock_state(&mut self) -> &mut SessionLockManagerState {
+        &mut self.session_lock_state
+    }
+
+    fn lock(&mut self, confirmation: SessionLocker) {
+        confirmation.lock();
+    }
+
+    fn unlock(&mut self) {}
+
+    fn new_surface(&mut self, surface: LockSurface, _output: smithay::reexports::wayland_server::protocol::wl_output::WlOutput) {
+        surface.send_configure();
+    }
+}
+delegate_session_lock!(Aqua);

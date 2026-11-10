@@ -1036,11 +1036,7 @@ impl Shell {
             // Floating 8px above the dock glass plate
             let tip_y = glass_y - tip_h - 7.0;
 
-            let tip_bg = if t.dark() {
-                [30, 30, 38, 235]
-            } else {
-                [248, 248, 252, 240]
-            };
+            let tip_bg = t.tooltip_bg();
             // Layered tooltip shadow
             squircle_rect(&mut pm, tip_x, tip_y + 1.5, tip_w, tip_h, 7.0, [0, 0, 0, 30]);
             squircle_rect(&mut pm, tip_x, tip_y + 0.5, tip_w, tip_h, 7.0, [0, 0, 0, 18]);
@@ -1448,23 +1444,6 @@ pub fn dock_rect(screen_w: i32, screen_h: i32) -> (i32, i32, i32, i32) {
     dock_rect_with_size(screen_w, screen_h, ICON)
 }
 
-fn round_rect_path(x: f32, y: f32, w: f32, h: f32, r: f32) -> tiny_skia::Path {
-    let r = r.min(w / 2.0).min(h / 2.0);
-    let k = 0.552_284_8 * r;
-    let mut pb = PathBuilder::new();
-    pb.move_to(x + r, y);
-    pb.line_to(x + w - r, y);
-    pb.cubic_to(x + w - r + k, y, x + w, y + r - k, x + w, y + r);
-    pb.line_to(x + w, y + h - r);
-    pb.cubic_to(x + w, y + h - r + k, x + w - r + k, y + h, x + w - r, y + h);
-    pb.line_to(x + r, y + h);
-    pb.cubic_to(x + r - k, y + h, x, y + h - r + k, x, y + h - r);
-    pb.line_to(x, y + r);
-    pb.cubic_to(x, y + r - k, x + r - k, y, x + r, y);
-    pb.close();
-    pb.finish().expect("round rect path")
-}
-
 /// Squircle (Apple continuous corner superellipse curvature, n=5).
 /// Generates true G2 continuous curvature without pointed or diamond-like artifacts.
 pub fn squircle_path(x: f32, y: f32, w: f32, h: f32, r: f32) -> tiny_skia::Path {
@@ -1508,7 +1487,11 @@ pub fn squircle_path(x: f32, y: f32, w: f32, h: f32, r: f32) -> tiny_skia::Path 
         }
     }
     pb.close();
-    pb.finish().unwrap_or_else(|| round_rect_path(x, y, w, h, r))
+    pb.finish().unwrap_or_else(|| {
+        let mut fallback = PathBuilder::new();
+        fallback.push_rect(tiny_skia::Rect::from_xywh(x, y, w, h).unwrap_or(tiny_skia::Rect::from_xywh(0.0, 0.0, 1.0, 1.0).unwrap()));
+        fallback.finish().expect("fallback rect path")
+    })
 }
 
 pub fn squircle_rect(pm: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, r: f32, color: [u8; 4]) {
@@ -1548,10 +1531,7 @@ fn fill_rect(pm: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, color: [u8; 4]) {
 }
 
 fn rounded_rect(pm: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, r: f32, color: [u8; 4]) {
-    let path = round_rect_path(x, y, w, h, r);
-    let mut paint = Paint::default();
-    paint.set_color_rgba8(color[0], color[1], color[2], color[3]);
-    pm.fill_path(&path, &paint, FillRule::Winding, SkTransform::identity(), None);
+    squircle_rect(pm, x, y, w, h, r, color);
 }
 
 fn stroke_rounded(
@@ -1564,15 +1544,7 @@ fn stroke_rounded(
     color: [u8; 4],
     width: f32,
 ) {
-    let path = round_rect_path(x, y, w, h, r);
-    let mut paint = Paint::default();
-    paint.set_color_rgba8(color[0], color[1], color[2], color[3]);
-    let stroke = Stroke {
-        width,
-        line_cap: LineCap::Round,
-        ..Default::default()
-    };
-    pm.stroke_path(&path, &paint, &stroke, SkTransform::identity(), None);
+    stroke_squircle(pm, x, y, w, h, r, color, width);
 }
 
 fn fill_circle(pm: &mut Pixmap, cx: f32, cy: f32, r: f32, color: [u8; 4]) {

@@ -20,11 +20,13 @@ use smithay::{
             ImportAll, ImportMem,
         },
     },
-    desktop::Window,
+    desktop::{layer_map_for_output, Window},
     output::Output,
     utils::{Logical, Physical, Point, Rectangle, Scale, Size, Transform},
-    wayland::compositor::with_states,
-    wayland::shell::xdg::XdgToplevelSurfaceData,
+    wayland::{
+        compositor::with_states,
+        shell::{wlr_layer::Layer, xdg::XdgToplevelSurfaceData},
+    },
     reexports::wayland_server::Resource,
 };
 
@@ -349,9 +351,18 @@ pub fn render(
 
     let mut elements: Vec<AquaRenderElement<GlesRenderer>> = Vec::new();
 
-    if let Some(elem) = state.shell.wallpaper_element(renderer) {
-        elements.push(AquaRenderElement::Memory(elem));
+    // 1. Background layer surfaces (e.g. custom wallpaper clients) & default wallpaper
+    let bg_layers = collect_layer_elements(output, Layer::Background, renderer, scale_s);
+    if bg_layers.is_empty() {
+        if let Some(elem) = state.shell.wallpaper_element(renderer) {
+            elements.push(AquaRenderElement::Memory(elem));
+        }
+    } else {
+        elements.extend(bg_layers);
     }
+
+    // 2. Bottom layer surfaces (underneath normal windows)
+    elements.extend(collect_layer_elements(output, Layer::Bottom, renderer, scale_s));
 
     let now = std::time::Instant::now();
 
@@ -509,6 +520,9 @@ pub fn render(
     {
         elements.push(AquaRenderElement::Memory(elem));
     }
+
+    // Top layer surfaces (above windows, menu bar and dock)
+    elements.extend(collect_layer_elements(output, Layer::Top, renderer, scale_s));
 
     // Dropdown menu (if open)
     if let Some(ref active) = state.menu.active_menu {
@@ -773,6 +787,9 @@ pub fn render(
         }
     }
 
+    // Overlay layer surfaces (highest layer, above overlays)
+    elements.extend(collect_layer_elements(output, Layer::Overlay, renderer, scale_s));
+
     // Hardware/Software mouse cursor for native sessions (TTY/DRM)
     // If hardware_cursor is enabled in DRM, skip rendering software cursor in framebuffer
     if let Some(pos) = pointer_pos {
@@ -831,6 +848,25 @@ pub fn render(
     Ok(has_damage)
 }
 
+fn collect_layer_elements(
+    output: &Output,
+    layer: Layer,
+    renderer: &mut GlesRenderer,
+    scale_s: Scale<f64>,
+) -> Vec<AquaRenderElement<GlesRenderer>> {
+    let mut layer_elements: Vec<AquaRenderElement<GlesRenderer>> = Vec::new();
+    let map = layer_map_for_output(output);
+    for surface in map.layers_on(layer) {
+        if let Some(geo) = map.layer_geometry(surface) {
+            let loc_phys = geo.loc.to_physical_precise_round(scale_s);
+            let surface_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+                surface.render_elements(renderer, loc_phys, scale_s, 1.0);
+            layer_elements.extend(surface_elements.into_iter().map(AquaRenderElement::Surface));
+        }
+    }
+    layer_elements
+}
+
 fn running_apps(windows: &[Window]) -> [bool; 6] {
     let mut running = [false; 6];
     for window in windows {
@@ -861,20 +897,12 @@ fn build_deco(
 
 fn build_lights(dark: bool, focused: bool, hovered: bool) -> MemoryRenderBuffer {
     let mut pm = tiny_skia::Pixmap::new(56, 14).expect("lights pixmap");
-    let colors: [[u8; 4]; 3] = if focused {
-        [
-            [255, 95, 87, 255],
-            [254, 188, 46, 255],
-            [40, 200, 64, 255],
-        ]
-    } else {
-        let gray = if dark {
-            [96, 96, 102, 255]
-        } else {
-            [190, 190, 196, 255]
-        };
-        [gray, gray, gray]
+    let theme = Theme {
+        appearance: if dark { crate::theme::Appearance::Dark } else { crate::theme::Appearance::Light },
+        ..Default::default()
     };
+    let (c1, c2, c3) = theme.traffic_lights(focused, hovered);
+    let colors = [c1, c2, c3];
 
     for (i, color) in colors.iter().enumerate() {
         let cx = 7.0 + i as f32 * 20.0;

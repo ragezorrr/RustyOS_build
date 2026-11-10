@@ -323,4 +323,52 @@ impl Theme {
             }
         }
     }
+
+    // --- overlays and cards -----------------------------------------------
+
+    pub fn card_bg(&self) -> [u8; 4] {
+        if self.dark() {
+            [30, 30, 38, 235]
+        } else {
+            [248, 248, 252, 240]
+        }
+    }
+
+    pub fn card_border(&self) -> [u8; 4] {
+        if self.dark() {
+            [255, 255, 255, 32]
+        } else {
+            [0, 0, 0, 24]
+        }
+    }
+
+    pub fn separator(&self) -> [u8; 4] {
+        if self.dark() {
+            [255, 255, 255, 20]
+        } else {
+            [0, 0, 0, 25]
+        }
+    }
+
+    pub fn tooltip_bg(&self) -> [u8; 4] {
+        if self.dark() {
+            [30, 30, 38, 235]
+        } else {
+            [248, 248, 252, 240]
+        }
+    }
+
+    pub fn traffic_lights(&self, focused: bool, hovered: bool) -> ([u8; 4], [u8; 4], [u8; 4]) {
+        if focused || hovered {
+            (
+                [255, 95, 87, 255],  // Close
+                [254, 188, 46, 255], // Minimize
+                [40, 200, 64, 255],  // Zoom
+            )
+        } else if self.dark() {
+            ([96, 96, 102, 255], [96, 96, 102, 255], [96, 96, 102, 255])
+        } else {
+            ([190, 190, 196, 255], [190, 190, 196, 255], [190, 190, 196, 255])
+        }
+    }
 }

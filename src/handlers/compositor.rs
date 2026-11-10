@@ -43,6 +43,9 @@ impl CompositorHandler for Aqua {
         };
 
         xdg_shell::handle_commit(&mut self.popups, &self.space, surface);
+        if let Some(output) = self.current_output() {
+            super::layer_shell::handle_commit(&mut self.popups, &output, surface);
+        }
         resize_grab::handle_commit(&mut self.space, surface);
     }
 }

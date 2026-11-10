@@ -1,7 +1,7 @@
 use std::{ffi::OsString, sync::Arc};
 
 use smithay::{
-    desktop::{PopupManager, Space, Window, WindowSurfaceType},
+    desktop::{layer_map_for_output, PopupManager, Space, Window, WindowSurfaceType},
     input::{Seat, SeatState},
     reexports::{
         calloop::{generic::Generic, EventLoop, Interest, LoopSignal, Mode, PostAction},
@@ -15,12 +15,17 @@ use smithay::{
     wayland::{
         compositor::{CompositorClientState, CompositorState},
         fractional_scale::FractionalScaleManagerState,
+        idle_inhibit::IdleInhibitManagerState,
         output::OutputManagerState,
         selection::{
             data_device::DataDeviceState,
             primary_selection::PrimarySelectionState,
         },
-        shell::xdg::{decoration::XdgDecorationState, XdgShellState},
+        session_lock::SessionLockManagerState,
+        shell::{
+            wlr_layer::{Layer, WlrLayerShellState},
+            xdg::{decoration::XdgDecorationState, XdgShellState},
+        },
         shm::ShmState,
         socket::ListeningSocketSource,
         viewporter::ViewporterState,
@@ -86,6 +91,9 @@ pub struct Aqua {
     pub fractional_scale_state: FractionalScaleManagerState,
     pub viewporter_state: ViewporterState,
     pub xdg_activation_state: XdgActivationState,
+    pub layer_shell_state: WlrLayerShellState,
+    pub idle_inhibit_state: IdleInhibitManagerState,
+    pub session_lock_state: SessionLockManagerState,
     pub popups: PopupManager,
 
     pub seat: Seat<Self>,
@@ -110,6 +118,9 @@ impl Aqua {
         let fractional_scale_state = FractionalScaleManagerState::new::<Self>(&dh);
         let viewporter_state = ViewporterState::new::<Self>(&dh);
         let xdg_activation_state = XdgActivationState::new::<Self>(&dh);
+        let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
+        let idle_inhibit_state = IdleInhibitManagerState::new::<Self>(&dh);
+        let session_lock_state = SessionLockManagerState::new::<Self, _>(&dh, |_| true);
         let popups = PopupManager::default();
 
         // A seat is a group of keyboards, pointer and touch devices.
@@ -181,6 +192,9 @@ impl Aqua {
             fractional_scale_state,
             viewporter_state,
             xdg_activation_state,
+            layer_shell_state,
+            idle_inhibit_state,
+            session_lock_state,
             popups,
             seat,
             cursor_status: std::sync::Arc::new(std::sync::Mutex::new(smithay::input::pointer::CursorImageStatus::default_named())),
@@ -230,14 +244,47 @@ impl Aqua {
     }
 
     pub fn surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
-        self.space.element_under(pos).and_then(|(window, location)| {
+        let output = self.current_output();
+
+        // 1. Check topmost layer surfaces (Overlay, Top)
+        if let Some(ref output) = output {
+            let map = layer_map_for_output(output);
+            for layer in [Layer::Overlay, Layer::Top] {
+                if let Some(surface) = map.layer_under(layer, pos) {
+                    if let Some(geo) = map.layer_geometry(surface) {
+                        if let Some((s, p)) = surface.surface_under(pos - geo.loc.to_f64(), WindowSurfaceType::ALL) {
+                            return Some((s, (p + geo.loc).to_f64()));
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Check regular application windows
+        if let Some((window, location)) = self.space.element_under(pos) {
             let tb_h = crate::render::window_titlebar_h(&window);
             let geom_loc = window.geometry().loc;
             let client_pos = Point::from((location.x - geom_loc.x, location.y + tb_h - geom_loc.y));
-            window
-                .surface_under(pos - client_pos.to_f64(), WindowSurfaceType::ALL)
-                .map(|(s, p)| (s, (p + client_pos).to_f64()))
-        })
+            if let Some((s, p)) = window.surface_under(pos - client_pos.to_f64(), WindowSurfaceType::ALL) {
+                return Some((s, (p + client_pos).to_f64()));
+            }
+        }
+
+        // 3. Check lower layer surfaces (Bottom, Background)
+        if let Some(ref output) = output {
+            let map = layer_map_for_output(output);
+            for layer in [Layer::Bottom, Layer::Background] {
+                if let Some(surface) = map.layer_under(layer, pos) {
+                    if let Some(geo) = map.layer_geometry(surface) {
+                        if let Some((s, p)) = surface.surface_under(pos - geo.loc.to_f64(), WindowSurfaceType::ALL) {
+                            return Some((s, (p + geo.loc).to_f64()));
+                        }
+                    }
+                }
+            }
+        }
+
+        None
     }
 
     fn prepare_command(&self, cmd: &mut std::process::Command) {
