@@ -474,6 +474,7 @@ fn render_output(
     }
 
     if let Ok((mut dmabuf, _age)) = drm_out.surface.next_buffer() {
+        let t_render = std::time::Instant::now();
         let render_res = if let Ok(mut target) = renderer.bind(&mut dmabuf) {
             crate::render::render(
                 state,
@@ -485,11 +486,21 @@ fn render_output(
         } else {
             return;
         };
+        let d_render = t_render.elapsed();
+        if d_render.as_millis() >= 4 {
+            tracing::warn!(?d_render, "Slow crate::render::render stage");
+        }
 
         match render_res {
             Ok(has_damage) => {
                 if has_damage {
-                    if drm_out.surface.queue_buffer(None, None, ()).is_ok() {
+                    let t_queue = std::time::Instant::now();
+                    let queue_res = drm_out.surface.queue_buffer(None, None, ());
+                    let d_queue = t_queue.elapsed();
+                    if d_queue.as_millis() >= 4 {
+                        tracing::warn!(?d_queue, "Slow queue_buffer stage");
+                    }
+                    if queue_res.is_ok() {
                         drm_out.state = DrmOutputState::WaitingForVBlank { redraw_needed: false };
                         drm_out.last_frame_queued = Some(now);
                     }

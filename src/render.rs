@@ -275,6 +275,7 @@ pub fn render(
 
     let layout_name = state.current_layout_name();
 
+    let t_ensure = std::time::Instant::now();
     state.shell.ensure(
         geometry.size.w,
         geometry.size.h,
@@ -289,12 +290,38 @@ pub fn render(
         network_kind,
         &layout_name,
     );
+    let d_ensure = t_ensure.elapsed();
+    if d_ensure.as_millis() >= 4 {
+        tracing::warn!(?d_ensure, "Slow shell.ensure stage");
+    }
 
+    let t_elements = std::time::Instant::now();
     let mut elements: Vec<AquaRenderElement<GlesRenderer>> = Vec::new();
 
+    let mut dur_wallpaper = std::time::Duration::ZERO;
+    let mut dur_deco_frame = std::time::Duration::ZERO;
+    let mut dur_surfaces = std::time::Duration::ZERO;
+    let mut dur_lights = std::time::Duration::ZERO;
+    let mut dur_border = std::time::Duration::ZERO;
+    let mut dur_panel = std::time::Duration::ZERO;
+    let mut dur_dock = std::time::Duration::ZERO;
+    let mut dur_menu = std::time::Duration::ZERO;
+    let mut dur_spotlight = std::time::Duration::ZERO;
+    let mut dur_control_center = std::time::Duration::ZERO;
+    let mut dur_switcher = std::time::Duration::ZERO;
+    let mut dur_settings = std::time::Duration::ZERO;
+    let mut dur_stage_manager = std::time::Duration::ZERO;
+    let mut dur_notifications = std::time::Duration::ZERO;
+    let mut dur_wifi_menu = std::time::Duration::ZERO;
+    let mut dur_desktop_menu = std::time::Duration::ZERO;
+    let mut dur_osd = std::time::Duration::ZERO;
+    let mut dur_cursor = std::time::Duration::ZERO;
+
+    let t0 = std::time::Instant::now();
     if let Some(elem) = state.shell.wallpaper_element(renderer) {
         elements.push(AquaRenderElement::Memory(elem));
     }
+    dur_wallpaper += t0.elapsed();
 
     let now = std::time::Instant::now();
 
@@ -332,6 +359,7 @@ pub fn render(
 
         // Shadow, background, titlebar and outer border (behind the client).
         if !is_csd && !is_fullscreen {
+            let t0 = std::time::Instant::now();
             let deco = state.deco.deco(key, size.w, size.h, title.as_deref(), focused, is_csd, &state.shell.theme);
             let pos = Point::<f64, Physical>::from((
                 (loc.x - SHADOW_PAD) as f64,
@@ -348,19 +376,23 @@ pub fn render(
             ) {
                 elements.push(AquaRenderElement::Memory(elem));
             }
+            dur_deco_frame += t0.elapsed();
         }
 
         // Client surface (and popups) shifted down by titlebar_h (0 for CSD windows).
         // For Wayland clients, window.geometry().loc accounts for client-side window margins/shadows.
+        let t0 = std::time::Instant::now();
         let geom_loc = window.geometry().loc;
         let client_loc = Point::from((loc.x - geom_loc.x, loc.y + titlebar_h - geom_loc.y));
         let loc_phys = client_loc.to_physical_precise_round(scale_s);
         let surface_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
             window.render_elements(renderer, loc_phys, scale_s, alpha);
         elements.extend(surface_elements.into_iter().map(AquaRenderElement::Surface));
+        dur_surfaces += t0.elapsed();
 
         // Traffic lights (in titlebar above the background, only for non-CSD windows).
         if !is_csd && !is_fullscreen {
+            let t0 = std::time::Instant::now();
             let pointer_pos = state.seat.get_pointer().map(|p| p.current_location());
             let lights_hovered = pointer_pos.map_or(false, |pos| {
                 traffic_light_at(loc, pos).is_some()
@@ -381,10 +413,12 @@ pub fn render(
             ) {
                 elements.push(AquaRenderElement::Memory(elem));
             }
+            dur_lights += t0.elapsed();
         }
 
         // Crisp rounded border above the window (SSD only).
         if !is_csd && !is_fullscreen {
+            let t0 = std::time::Instant::now();
             let deco = state.deco.deco(key, size.w, size.h, title.as_deref(), focused, is_csd, &state.shell.theme);
             let pos = Point::<f64, Physical>::from((loc.x as f64, loc.y as f64));
             if let Ok(elem) = MemoryRenderBufferRenderElement::from_buffer(
@@ -398,20 +432,27 @@ pub fn render(
             ) {
                 elements.push(AquaRenderElement::Memory(elem));
             }
+            dur_border += t0.elapsed();
         }
     }
 
+    let t0 = std::time::Instant::now();
     if let Some(elem) = state.shell.panel_element(renderer) {
         elements.push(AquaRenderElement::Memory(elem));
     }
+    dur_panel += t0.elapsed();
+
+    let t0 = std::time::Instant::now();
     if let Some(elem) = state
         .shell
         .dock_element(renderer, geometry.size.w, geometry.size.h)
     {
         elements.push(AquaRenderElement::Memory(elem));
     }
+    dur_dock += t0.elapsed();
 
     // Dropdown menu (if open)
+    let t0 = std::time::Instant::now();
     if let Some(ref active) = state.menu.active_menu {
         let menu_pos = active.1;
         let pointer_pos = state.seat.get_pointer().map(|p| {
@@ -433,8 +474,10 @@ pub fn render(
             }
         }
     }
+    dur_menu += t0.elapsed();
 
     // Spotlight search window (if open)
+    let t0 = std::time::Instant::now();
     if state.spotlight.open {
         if let Some(buf) = crate::spotlight::render_spotlight(&state.spotlight, &state.shell.theme, &state.deco.text) {
             let spot_x = (geometry.size.w - 620) / 2;
@@ -453,8 +496,10 @@ pub fn render(
             }
         }
     }
+    dur_spotlight += t0.elapsed();
 
     // Control Center (if open)
+    let t0 = std::time::Instant::now();
     if state.control_center.open {
         let pointer_pos = state.seat.get_pointer().map(|p| {
             let loc = p.current_location();
@@ -477,8 +522,10 @@ pub fn render(
             }
         }
     }
+    dur_control_center += t0.elapsed();
 
     // App Switcher overlay (Super + Tab)
+    let t0 = std::time::Instant::now();
     if state.switcher.active {
         if let Some(buf) = crate::control_center::render_app_switcher(&state.switcher, &state.shell.theme, &state.deco.text) {
             let count = state.switcher.items.len();
@@ -499,8 +546,10 @@ pub fn render(
             }
         }
     }
+    dur_switcher += t0.elapsed();
 
     // System Settings window (if open)
+    let t0 = std::time::Instant::now();
     if state.settings.open {
         if let Some(buf) = crate::settings::render_settings(&state.settings, &state.shell.theme, &state.deco.text) {
             let (set_x, set_y) = state.settings.loc.unwrap_or_else(|| {
@@ -523,8 +572,10 @@ pub fn render(
             }
         }
     }
+    dur_settings += t0.elapsed();
 
     // Stage Manager (left sidebar thumbnails)
+    let t0 = std::time::Instant::now();
     if state.stage_manager.enabled {
         if let Some((sm_h, buf)) = crate::desktop_menu::render_stage_manager(
             &state.stage_manager,
@@ -551,8 +602,10 @@ pub fn render(
             }
         }
     }
+    dur_stage_manager += t0.elapsed();
 
     // Notification Center History Panel (slide-out from right)
+    let t0 = std::time::Instant::now();
     if state.notifications.panel_open {
         if let Some(buf) = crate::notifications::render_nc_panel(
             &state.notifications,
@@ -575,8 +628,10 @@ pub fn render(
             }
         }
     }
+    dur_notifications += t0.elapsed();
 
     // Floating Notification Toasts (top-right)
+    let t0 = std::time::Instant::now();
     for (toast_y, buf) in crate::notifications::render_toasts(
         &state.notifications,
         &state.shell.theme,
@@ -597,8 +652,10 @@ pub fn render(
             elements.push(AquaRenderElement::Memory(elem));
         }
     }
+    dur_notifications += t0.elapsed();
 
     // Wi-Fi Dropdown Menu (if open)
+    let t0 = std::time::Instant::now();
     if state.wifi_menu.open {
         let wifi_menu_x = (geometry.size.w - crate::wifi::WIFI_MENU_W - 90).max(10);
         let wifi_menu_y = ui::PANEL_H + 6;
@@ -624,8 +681,10 @@ pub fn render(
             }
         }
     }
+    dur_wifi_menu += t0.elapsed();
 
     // Desktop Context Menu (right click on wallpaper)
+    let t0 = std::time::Instant::now();
     if state.desktop_menu.open {
         if let Some(buf) = crate::desktop_menu::render_desktop_menu(
             &state.desktop_menu,
@@ -650,8 +709,10 @@ pub fn render(
             }
         }
     }
+    dur_desktop_menu += t0.elapsed();
 
     // OSD HUD Overlay (Volume/Brightness centered)
+    let t0 = std::time::Instant::now();
     state.osd.update();
     if let Some(buf) = crate::notifications::render_osd(
         &state.osd,
@@ -673,9 +734,11 @@ pub fn render(
             elements.push(AquaRenderElement::Memory(elem));
         }
     }
+    dur_osd += t0.elapsed();
 
     // Hardware/Software mouse cursor for native sessions (TTY/DRM)
     // If hardware_cursor is enabled in DRM, skip rendering software cursor in framebuffer
+    let t0 = std::time::Instant::now();
     if let Some(pos) = pointer_pos {
         let cursor_status = state.cursor_status.lock().ok().map(|s| s.clone());
         match cursor_status {
@@ -714,6 +777,7 @@ pub fn render(
             }
         }
     }
+    dur_cursor += t0.elapsed();
 
     let clear = state.shell.theme.wallpaper_bottom();
     let clear = [
@@ -727,7 +791,49 @@ pub fn render(
     // (it renders the list reversed), while we built it bottom-to-top.
     elements.reverse();
 
+    let d_elements = t_elements.elapsed();
+    if d_elements.as_millis() >= 4 {
+        let blocks = [
+            ("wallpaper", dur_wallpaper),
+            ("deco_frame", dur_deco_frame),
+            ("surfaces", dur_surfaces),
+            ("lights", dur_lights),
+            ("border", dur_border),
+            ("panel", dur_panel),
+            ("dock", dur_dock),
+            ("menu", dur_menu),
+            ("spotlight", dur_spotlight),
+            ("control_center", dur_control_center),
+            ("switcher", dur_switcher),
+            ("settings", dur_settings),
+            ("stage_manager", dur_stage_manager),
+            ("notifications", dur_notifications),
+            ("wifi_menu", dur_wifi_menu),
+            ("desktop_menu", dur_desktop_menu),
+            ("osd", dur_osd),
+            ("cursor", dur_cursor),
+        ];
+        let slow_blocks: Vec<String> = blocks
+            .iter()
+            .filter(|(_, d)| d.as_millis() >= 1)
+            .map(|(name, d)| format!("block={} ms={:.2}", name, d.as_secs_f64() * 1000.0))
+            .collect();
+
+        tracing::warn!(
+            total_ms = format_args!("{:.2}", d_elements.as_secs_f64() * 1000.0),
+            element_count = elements.len(),
+            slow = slow_blocks.join(", "),
+            "Slow elements assembly"
+        );
+    }
+
+    let t_render_out = std::time::Instant::now();
     let res = damage_tracker.render_output(renderer, framebuffer, 0, &elements, clear)?;
+    let d_render_out = t_render_out.elapsed();
+    if d_render_out.as_millis() >= 4 {
+        tracing::warn!(?d_render_out, "Slow damage_tracker.render_output stage");
+    }
+
     let has_damage = res.damage.map_or(false, |d| !d.is_empty());
     Ok(has_damage)
 }
