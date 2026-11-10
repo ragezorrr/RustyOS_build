@@ -153,8 +153,16 @@ pub fn window_is_csd(window: &Window) -> bool {
         || title.contains("mozilla firefox")
 }
 
+pub fn window_is_fullscreen(window: &Window) -> bool {
+    if let Some(toplevel) = window.toplevel() {
+        toplevel.current_state().states.contains(smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen)
+    } else {
+        false
+    }
+}
+
 pub fn window_titlebar_h(window: &Window) -> i32 {
-    if window_is_csd(window) {
+    if window_is_csd(window) || window_is_fullscreen(window) {
         0
     } else {
         TITLEBAR_H
@@ -320,8 +328,10 @@ pub fn render(
             loc.y += (progress * 8.0).round() as i32;
         }
 
+        let is_fullscreen = window_is_fullscreen(window);
+
         // Shadow, background, titlebar and outer border (behind the client).
-        if !is_csd {
+        if !is_csd && !is_fullscreen {
             let deco = state.deco.deco(key, size.w, size.h, title.as_deref(), focused, is_csd, &state.shell.theme);
             let pos = Point::<f64, Physical>::from((
                 (loc.x - SHADOW_PAD) as f64,
@@ -350,7 +360,7 @@ pub fn render(
         elements.extend(surface_elements.into_iter().map(AquaRenderElement::Surface));
 
         // Traffic lights (in titlebar above the background, only for non-CSD windows).
-        if !is_csd {
+        if !is_csd && !is_fullscreen {
             let pointer_pos = state.seat.get_pointer().map(|p| p.current_location());
             let lights_hovered = pointer_pos.map_or(false, |pos| {
                 traffic_light_at(loc, pos).is_some()
@@ -374,7 +384,7 @@ pub fn render(
         }
 
         // Crisp rounded border above the window (SSD only).
-        if !is_csd {
+        if !is_csd && !is_fullscreen {
             let deco = state.deco.deco(key, size.w, size.h, title.as_deref(), focused, is_csd, &state.shell.theme);
             let pos = Point::<f64, Physical>::from((loc.x as f64, loc.y as f64));
             if let Ok(elem) = MemoryRenderBufferRenderElement::from_buffer(

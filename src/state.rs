@@ -57,6 +57,8 @@ pub struct Aqua {
     pub focused_window: Option<Window>,
     /// Saved geometry of windows that are currently maximized.
     pub maximized: std::collections::HashMap<u32, (Point<i32, Logical>, smithay::utils::Size<i32, Logical>)>,
+    /// Saved geometry of windows that are currently fullscreen: key -> (saved_loc, saved_size)
+    pub fullscreen: std::collections::HashMap<u32, (Point<i32, Logical>, smithay::utils::Size<i32, Logical>)>,
     /// Last titlebar click time for double-click detection.
     pub last_titlebar_click: Option<(u32, std::time::Instant)>,
     /// Window animations in progress: key -> (start_time, duration, from_loc, to_loc)
@@ -147,6 +149,7 @@ impl Aqua {
             minimized_windows: std::collections::HashMap::new(),
             focused_window: None,
             maximized: std::collections::HashMap::new(),
+            fullscreen: std::collections::HashMap::new(),
             last_titlebar_click: None,
             window_animations: std::collections::HashMap::new(),
             window_open_animations: std::collections::HashMap::new(),
@@ -512,6 +515,36 @@ impl Aqua {
                 );
                 self.space.map_element(window.clone(), current_loc, true);
             }
+        }
+    }
+
+    pub fn set_fullscreen(&mut self, window: &Window, fullscreen: bool) {
+        let Some(toplevel) = window.toplevel() else {
+            return;
+        };
+        let Some(key) = crate::render::window_key(window) else {
+            return;
+        };
+
+        if fullscreen {
+            let output_geo = self.output_geometry();
+            let current_loc = self.space.element_location(window).unwrap_or_else(|| Point::from((0, 0)));
+            let size = window.geometry().size;
+            self.fullscreen.insert(key, (current_loc, size));
+
+            toplevel.with_pending_state(|state| {
+                state.states.set(smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen);
+                state.size = Some(smithay::utils::Size::from((output_geo.size.w, output_geo.size.h)));
+            });
+            let _ = toplevel.send_configure();
+            self.space.map_element(window.clone(), Point::from((0, 0)), true);
+        } else if let Some((loc, size)) = self.fullscreen.remove(&key) {
+            toplevel.with_pending_state(|state| {
+                state.states.unset(smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen);
+                state.size = Some(size);
+            });
+            let _ = toplevel.send_configure();
+            self.space.map_element(window.clone(), loc, true);
         }
     }
 }

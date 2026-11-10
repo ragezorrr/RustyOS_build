@@ -197,6 +197,71 @@ impl XdgShellHandler for Aqua {
             }
         }
     }
+
+    fn minimize_request(&mut self, surface: ToplevelSurface) {
+        let wl_surface = surface.wl_surface();
+        let window = self
+            .space
+            .elements()
+            .find(|w| w.toplevel().map(|t| t.wl_surface() == wl_surface).unwrap_or(false))
+            .cloned();
+
+        if let Some(window) = window {
+            self.minimize_window(&window);
+        }
+    }
+
+    fn fullscreen_request(
+        &mut self,
+        surface: ToplevelSurface,
+        _output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+    ) {
+        let wl_surface = surface.wl_surface();
+        let window = self
+            .space
+            .elements()
+            .find(|w| w.toplevel().map(|t| t.wl_surface() == wl_surface).unwrap_or(false))
+            .cloned();
+
+        if let Some(window) = window {
+            self.set_fullscreen(&window, true);
+        }
+    }
+
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        let wl_surface = surface.wl_surface();
+        let window = self
+            .space
+            .elements()
+            .find(|w| w.toplevel().map(|t| t.wl_surface() == wl_surface).unwrap_or(false))
+            .cloned();
+
+        if let Some(window) = window {
+            self.set_fullscreen(&window, false);
+        }
+    }
+
+    fn show_window_menu(
+        &mut self,
+        surface: ToplevelSurface,
+        _seat: wl_seat::WlSeat,
+        _serial: Serial,
+        location: Point<i32, Logical>,
+    ) {
+        let wl_surface = surface.wl_surface();
+        let window = self
+            .space
+            .elements()
+            .find(|w| w.toplevel().map(|t| t.wl_surface() == wl_surface).unwrap_or(false))
+            .cloned();
+
+        if let Some(window) = window {
+            if let Some(window_loc) = self.space.element_location(&window) {
+                let menu_pos = Point::from((window_loc.x + location.x, window_loc.y + location.y));
+                self.desktop_menu.open_at(menu_pos);
+            }
+        }
+    }
 }
 
 // Xdg Shell
