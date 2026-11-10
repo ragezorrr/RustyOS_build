@@ -14,11 +14,17 @@ use smithay::{
     utils::{Logical, Point},
     wayland::{
         compositor::{CompositorClientState, CompositorState},
+        fractional_scale::FractionalScaleManagerState,
         output::OutputManagerState,
-        selection::data_device::DataDeviceState,
+        selection::{
+            data_device::DataDeviceState,
+            primary_selection::PrimarySelectionState,
+        },
         shell::xdg::{decoration::XdgDecorationState, XdgShellState},
         shm::ShmState,
         socket::ListeningSocketSource,
+        viewporter::ViewporterState,
+        xdg_activation::XdgActivationState,
     },
 };
 
@@ -76,6 +82,10 @@ pub struct Aqua {
     pub output_manager_state: OutputManagerState,
     pub seat_state: SeatState<Aqua>,
     pub data_device_state: DataDeviceState,
+    pub primary_selection_state: PrimarySelectionState,
+    pub fractional_scale_state: FractionalScaleManagerState,
+    pub viewporter_state: ViewporterState,
+    pub xdg_activation_state: XdgActivationState,
     pub popups: PopupManager,
 
     pub seat: Seat<Self>,
@@ -96,6 +106,10 @@ impl Aqua {
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
         let mut seat_state = SeatState::new();
         let data_device_state = DataDeviceState::new::<Self>(&dh);
+        let primary_selection_state = PrimarySelectionState::new::<Self>(&dh);
+        let fractional_scale_state = FractionalScaleManagerState::new::<Self>(&dh);
+        let viewporter_state = ViewporterState::new::<Self>(&dh);
+        let xdg_activation_state = XdgActivationState::new::<Self>(&dh);
         let popups = PopupManager::default();
 
         // A seat is a group of keyboards, pointer and touch devices.
@@ -163,6 +177,10 @@ impl Aqua {
             output_manager_state,
             seat_state,
             data_device_state,
+            primary_selection_state,
+            fractional_scale_state,
+            viewporter_state,
+            xdg_activation_state,
             popups,
             seat,
             cursor_status: std::sync::Arc::new(std::sync::Mutex::new(smithay::input::pointer::CursorImageStatus::default_named())),
