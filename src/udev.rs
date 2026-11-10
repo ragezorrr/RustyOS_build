@@ -209,6 +209,7 @@ pub fn run_udev(
                             }
                         }
 
+                        #[allow(deprecated)]
                         if drm_fd.set_cursor(crtc, Some(&dumb)).is_ok() {
                             tracing::info!(?crtc, "Hardware DRM cursor plane enabled successfully");
                             data.state.hardware_cursor = true;
@@ -259,6 +260,7 @@ pub fn run_udev(
                 let x = loc.x.round() as i32;
                 let y = loc.y.round() as i32;
                 for &crtc in res.crtcs() {
+                    #[allow(deprecated)]
                     let _ = drm_cursor_fd.move_cursor(crtc, (x, y));
                 }
             }
