@@ -194,7 +194,7 @@ impl Default for DisplayConfig {
             refresh_rate: detected.refresh_rate,
             pending_resolution: detected.resolution,
             pending_scaling: 100,
-            brightness: 0.85,
+            brightness: crate::hardware::read_hardware_brightness().unwrap_or(0.85),
             scaling: 100,
             selected_preset: 2,
             night_shift: false,

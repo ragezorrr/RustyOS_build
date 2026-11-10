@@ -176,24 +176,30 @@ impl Aqua {
                                 keysyms::KEY_XF86AudioRaiseVolume => {
                                     state.control_center.volume = (state.control_center.volume + 0.05).min(1.0);
                                     let v = state.control_center.volume;
+                                    crate::hardware::apply_hardware_volume(v);
                                     state.osd.trigger(crate::notifications::OsdKind::Volume, v);
                                     return FilterResult::Intercept(());
                                 }
                                 keysyms::KEY_XF86AudioLowerVolume => {
                                     state.control_center.volume = (state.control_center.volume - 0.05).max(0.0);
                                     let v = state.control_center.volume;
+                                    crate::hardware::apply_hardware_volume(v);
                                     state.osd.trigger(crate::notifications::OsdKind::Volume, v);
                                     return FilterResult::Intercept(());
                                 }
                                 keysyms::KEY_XF86MonBrightnessUp => {
                                     state.control_center.brightness = (state.control_center.brightness + 0.05).min(1.0);
                                     let b = state.control_center.brightness;
+                                    state.settings.display.brightness = b;
+                                    crate::hardware::apply_hardware_brightness(b);
                                     state.osd.trigger(crate::notifications::OsdKind::Brightness, b);
                                     return FilterResult::Intercept(());
                                 }
                                 keysyms::KEY_XF86MonBrightnessDown => {
                                     state.control_center.brightness = (state.control_center.brightness - 0.05).max(0.05);
                                     let b = state.control_center.brightness;
+                                    state.settings.display.brightness = b;
+                                    crate::hardware::apply_hardware_brightness(b);
                                     state.osd.trigger(crate::notifications::OsdKind::Brightness, b);
                                     return FilterResult::Intercept(());
                                 }
@@ -258,10 +264,12 @@ impl Aqua {
                             let b = val.clamp(0.05, 1.0);
                             self.control_center.brightness = b;
                             self.settings.display.brightness = b;
+                            crate::hardware::apply_hardware_brightness(b);
                             self.osd.trigger(crate::notifications::OsdKind::Brightness, b);
                         }
                         crate::control_center::ControlSlider::Volume => {
                             self.control_center.volume = val;
+                            crate::hardware::apply_hardware_volume(val);
                             self.osd.trigger(crate::notifications::OsdKind::Volume, val);
                         }
                     }
@@ -327,10 +335,12 @@ impl Aqua {
                             let b = val.clamp(0.05, 1.0);
                             self.control_center.brightness = b;
                             self.settings.display.brightness = b;
+                            crate::hardware::apply_hardware_brightness(b);
                             self.osd.trigger(crate::notifications::OsdKind::Brightness, b);
                         }
                         crate::control_center::ControlSlider::Volume => {
                             self.control_center.volume = val;
+                            crate::hardware::apply_hardware_volume(val);
                             self.osd.trigger(crate::notifications::OsdKind::Volume, val);
                         }
                     }
@@ -485,6 +495,7 @@ impl Aqua {
                                 let val = ((cx - 24) as f32 / 272.0).clamp(0.05, 1.0);
                                 self.control_center.brightness = val;
                                 self.settings.display.brightness = val;
+                                crate::hardware::apply_hardware_brightness(val);
                                 self.control_center.dragging_slider = Some(crate::control_center::ControlSlider::Brightness);
                                 self.osd.trigger(crate::notifications::OsdKind::Brightness, val);
                                 pointer.frame(self);
@@ -494,6 +505,7 @@ impl Aqua {
                             if cx >= 24 && cx < 296 && cy >= 272 && cy < 296 {
                                 let val = ((cx - 24) as f32 / 272.0).clamp(0.0, 1.0);
                                 self.control_center.volume = val;
+                                crate::hardware::apply_hardware_volume(val);
                                 self.control_center.dragging_slider = Some(crate::control_center::ControlSlider::Volume);
                                 self.osd.trigger(crate::notifications::OsdKind::Volume, val);
                                 pointer.frame(self);
@@ -650,6 +662,7 @@ impl Aqua {
                             match action {
                                 crate::settings::SettingsAction::BrightnessChanged(val) => {
                                     self.control_center.brightness = val;
+                                    crate::hardware::apply_hardware_brightness(val);
                                     self.osd.trigger(crate::notifications::OsdKind::Brightness, val);
                                 }
                                 crate::settings::SettingsAction::ApplyDisplay { width, height, scale } => {

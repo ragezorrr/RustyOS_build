@@ -14,6 +14,7 @@ mod winit;
 pub mod apps;
 pub mod control_center;
 pub mod desktop_menu;
+pub mod hardware;
 pub mod notifications;
 pub mod settings;
 pub mod spotlight;

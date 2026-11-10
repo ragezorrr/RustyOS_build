@@ -35,10 +35,12 @@ pub enum ControlSlider {
 
 impl Default for ControlCenterState {
     fn default() -> Self {
+        let initial_volume = crate::hardware::read_hardware_volume().unwrap_or(0.70);
+        let initial_brightness = crate::hardware::read_hardware_brightness().unwrap_or(0.85);
         Self {
             open: false,
-            volume: 0.70,
-            brightness: 0.85,
+            volume: initial_volume,
+            brightness: initial_brightness,
             wifi_enabled: true,
             bluetooth_enabled: true,
             dragging_slider: None,
@@ -50,6 +52,14 @@ impl ControlCenterState {
     pub fn toggle(&mut self) {
         self.open = !self.open;
         self.dragging_slider = None;
+        if self.open {
+            if let Some(vol) = crate::hardware::read_hardware_volume() {
+                self.volume = vol;
+            }
+            if let Some(bright) = crate::hardware::read_hardware_brightness() {
+                self.brightness = bright;
+            }
+        }
     }
 
     pub fn close(&mut self) {
