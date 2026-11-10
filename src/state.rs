@@ -548,12 +548,15 @@ impl Aqua {
         };
         let is_csd = crate::render::window_is_csd(window);
 
+        // Cancel any pending animations on this window to avoid concurrent race conditions
+        self.window_animations.remove(&key);
+
         if let Some((loc, size)) = self.maximized.remove(&key) {
             toplevel.with_pending_state(|state| {
                 state.states.unset(smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Maximized);
                 state.size = Some(size);
             });
-            let _ = toplevel.send_configure();
+            let _ = toplevel.send_pending_configure();
 
             if is_csd {
                 self.space.map_element(window.clone(), loc, true);
@@ -585,7 +588,7 @@ impl Aqua {
                     state.size = Some(smithay::utils::Size::from((work.size.w, client_h)));
                 }
             });
-            let _ = toplevel.send_configure();
+            let _ = toplevel.send_pending_configure();
 
             if is_csd {
                 self.space.map_element(window.clone(), work.loc, true);

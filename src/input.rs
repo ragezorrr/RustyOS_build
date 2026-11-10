@@ -894,6 +894,7 @@ impl Aqua {
 
                             if is_double_click {
                                 self.last_titlebar_click = None;
+                                pointer.unset_grab(self, serial, event.time_msec());
                                 self.toggle_maximized(&window);
                                 pointer.frame(self);
                                 return;
@@ -901,17 +902,20 @@ impl Aqua {
                                 self.last_titlebar_click = Some((key, now));
                             }
 
-                            let start_data = PointerGrabStartData {
-                                focus: None,
-                                button,
-                                location: pos,
-                            };
-                            let grab = MoveSurfaceGrab {
-                                start_data,
-                                window,
-                                initial_window_location: location,
-                            };
-                            pointer.set_grab(self, grab, serial, Focus::Clear);
+                            // If not already grabbed, begin move grab
+                            if !pointer.is_grabbed() {
+                                let start_data = PointerGrabStartData {
+                                    focus: None,
+                                    button,
+                                    location: pos,
+                                };
+                                let grab = MoveSurfaceGrab {
+                                    start_data,
+                                    window,
+                                    initial_window_location: location,
+                                };
+                                pointer.set_grab(self, grab, serial, Focus::Clear);
+                            }
                             pointer.frame(self);
                             return;
                         }

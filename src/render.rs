@@ -190,7 +190,14 @@ pub fn window_app_id(window: &Window) -> Option<String> {
 
 pub fn window_is_csd(window: &Window) -> bool {
     if let Some(toplevel) = window.toplevel() {
-        match toplevel.current_state().decoration_mode {
+        let deco_mode = with_states(toplevel.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|data| data.lock().ok())
+                .and_then(|attrs| attrs.current.decoration_mode)
+        });
+        match deco_mode {
             Some(smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode::ClientSide) => {
                 return true;
             }
@@ -220,7 +227,14 @@ pub fn window_is_csd(window: &Window) -> bool {
 
 pub fn window_is_fullscreen(window: &Window) -> bool {
     if let Some(toplevel) = window.toplevel() {
-        toplevel.current_state().states.contains(smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen)
+        with_states(toplevel.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|data| data.lock().ok())
+                .map(|attrs| attrs.current.states.contains(smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen))
+                .unwrap_or(false)
+        })
     } else {
         false
     }
