@@ -426,8 +426,8 @@ impl Shell {
     }
 
     /// Area reserved by the shell (menu bar and dock) for window placement and maximization.
-    pub fn work_area(&self, width: i32, height: i32) -> Rectangle<i32, Logical> {
-        let (_, dock_y, _, _) = dock_rect(width, height);
+    pub fn work_area(&self, width: i32, height: i32, icon_size: i32) -> Rectangle<i32, Logical> {
+        let (_, dock_y, _, _) = dock_rect_with_size(width, height, icon_size);
         // Reserve space above dock including DOCK_MARGIN and titlebar headroom
         let bottom_limit = dock_y - 10;
         let available_h = (bottom_limit - PANEL_H).max(100);
@@ -1411,6 +1411,7 @@ pub fn dock_rect_with_size(screen_w: i32, screen_h: i32, icon_size: i32) -> (i32
     dock_rect_dynamic(screen_w, screen_h, icon_size, 0, 0)
 }
 
+#[allow(dead_code)]
 pub fn dock_rect(screen_w: i32, screen_h: i32) -> (i32, i32, i32, i32) {
     dock_rect_with_size(screen_w, screen_h, ICON)
 }
@@ -1432,11 +1433,11 @@ fn round_rect_path(x: f32, y: f32, w: f32, h: f32, r: f32) -> tiny_skia::Path {
     pb.finish().expect("round rect path")
 }
 
-/// Squircle (Apple continuous corner superellipse curvature approximation).
-/// Uses smooth cubic Bézier handles with extended transition zones for continuous curvature (G2-like feel).
+/// Squircle (Apple continuous corner superellipse curvature, n=5).
+/// Generates true G2 continuous curvature without pointed or diamond-like artifacts.
 pub fn squircle_path(x: f32, y: f32, w: f32, h: f32, r: f32) -> tiny_skia::Path {
-    let r = r.min(w / 2.0).min(h / 2.0);
-    if r <= 0.0 {
+    let a = (r * 1.5286).min(w * 0.5).min(h * 0.5).max(0.0);
+    if a <= 0.001 {
         let mut pb = PathBuilder::new();
         pb.move_to(x, y);
         pb.line_to(x + w, y);
@@ -1446,87 +1447,34 @@ pub fn squircle_path(x: f32, y: f32, w: f32, h: f32, r: f32) -> tiny_skia::Path 
         return pb.finish().expect("rect path");
     }
 
-    // Extended transition distance matching Apple squircle formula (a = 1.5286 * r)
-    let d = (r * 1.5286).min(w / 2.0).min(h / 2.0);
+    let e = 2.0_f32 / 5.0;
+    let seg = 24;
+    let hp = std::f32::consts::FRAC_PI_2;
+    let corners = [
+        (x + w - a, y + a, 1.0_f32, -1.0_f32, true),
+        (x + w - a, y + h - a, 1.0_f32, 1.0_f32, false),
+        (x + a, y + h - a, -1.0_f32, 1.0_f32, true),
+        (x + a, y + a, -1.0_f32, -1.0_f32, false),
+    ];
+
     let mut pb = PathBuilder::new();
-
-    // Top edge & top-right squircle corner
-    pb.move_to(x + d, y);
-    pb.line_to(x + w - d, y);
-    pb.cubic_to(
-        x + w - d + 0.504 * d,
-        y,
-        x + w - d + 0.741 * d,
-        y + 0.052 * d,
-        x + w - d + 0.886 * d,
-        y + 0.197 * d,
-    );
-    pb.cubic_to(
-        x + w - 0.052 * d,
-        y + d - 0.741 * d,
-        x + w,
-        y + d - 0.504 * d,
-        x + w,
-        y + d,
-    );
-
-    // Right edge & bottom-right squircle corner
-    pb.line_to(x + w, y + h - d);
-    pb.cubic_to(
-        x + w,
-        y + h - d + 0.504 * d,
-        x + w - 0.052 * d,
-        y + h - d + 0.741 * d,
-        x + w - d + 0.886 * d,
-        y + h - d + 0.886 * d,
-    );
-    pb.cubic_to(
-        x + w - d + 0.741 * d,
-        y + h - 0.052 * d,
-        x + w - d + 0.504 * d,
-        y + h,
-        x + w - d,
-        y + h,
-    );
-
-    // Bottom edge & bottom-left squircle corner
-    pb.line_to(x + d, y + h);
-    pb.cubic_to(
-        x + d - 0.504 * d,
-        y + h,
-        x + d - 0.741 * d,
-        y + h - 0.052 * d,
-        x + d - 0.886 * d,
-        y + h - d + 0.886 * d,
-    );
-    pb.cubic_to(
-        x + 0.052 * d,
-        y + h - d + 0.741 * d,
-        x,
-        y + h - d + 0.504 * d,
-        x,
-        y + h - d,
-    );
-
-    // Left edge & top-left squircle corner
-    pb.line_to(x, y + d);
-    pb.cubic_to(
-        x,
-        y + d - 0.504 * d,
-        x + 0.052 * d,
-        y + d - 0.741 * d,
-        x + d - 0.886 * d,
-        y + d - 0.886 * d,
-    );
-    pb.cubic_to(
-        x + d - 0.741 * d,
-        y + 0.052 * d,
-        x + d - 0.504 * d,
-        y,
-        x + d,
-        y,
-    );
-
+    let mut first = true;
+    for (cx, cy, sx, sy, rev) in corners {
+        for i in 0..=seg {
+            let mut t = hp * (i as f32 / seg as f32);
+            if rev {
+                t = hp - t;
+            }
+            let px = cx + sx * a * t.cos().powf(e);
+            let py = cy + sy * a * t.sin().powf(e);
+            if first {
+                pb.move_to(px, py);
+                first = false;
+            } else {
+                pb.line_to(px, py);
+            }
+        }
+    }
     pb.close();
     pb.finish().unwrap_or_else(|| round_rect_path(x, y, w, h, r))
 }

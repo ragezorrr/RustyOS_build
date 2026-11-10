@@ -281,7 +281,7 @@ impl Aqua {
     pub fn work_area(&self) -> Option<smithay::utils::Rectangle<i32, Logical>> {
         let output = self.current_output()?;
         let geometry = self.space.output_geometry(&output)?;
-        Some(self.shell.work_area(geometry.size.w, geometry.size.h))
+        Some(self.shell.work_area(geometry.size.w, geometry.size.h, self.settings.dock.icon_size))
     }
 
     pub fn apply_display_mode(&mut self, width: i32, height: i32, scale_percent: i32) {
