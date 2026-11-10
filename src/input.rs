@@ -813,6 +813,12 @@ impl Aqua {
                         if button == BTN_LEFT {
                             self.space.raise_element(&window, true);
                             self.focus_window(&window);
+                            if let Some(toplevel) = window.toplevel() {
+                                toplevel.with_pending_state(|state| {
+                                    state.states.set(smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Resizing);
+                                });
+                                toplevel.send_pending_configure();
+                            }
                             let start_data = PointerGrabStartData {
                                 focus: None,
                                 button,

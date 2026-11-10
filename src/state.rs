@@ -443,8 +443,23 @@ impl Aqua {
     }
 
     pub fn focus_window(&mut self, window: &Window) {
+        let prev_focused = self.focused_window.take();
         self.focused_window = Some(window.clone());
+
+        // Deactivate previous window
+        if let Some(ref prev) = prev_focused {
+            if prev != window {
+                prev.set_activated(false);
+                if let Some(toplevel) = prev.toplevel() {
+                    toplevel.send_pending_configure();
+                }
+            }
+        }
+
+        // Activate new window
+        window.set_activated(true);
         if let Some(toplevel) = window.toplevel() {
+            toplevel.send_pending_configure();
             let serial = smithay::utils::SERIAL_COUNTER.next_serial();
             if let Some(keyboard) = self.seat.get_keyboard() {
                 keyboard.set_focus(self, Some(toplevel.wl_surface().clone()), serial);

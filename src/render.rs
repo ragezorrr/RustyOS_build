@@ -190,12 +190,17 @@ pub fn window_app_id(window: &Window) -> Option<String> {
 
 pub fn window_is_csd(window: &Window) -> bool {
     if let Some(toplevel) = window.toplevel() {
-        if toplevel.current_state().decoration_mode
-            == Some(smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode::ClientSide)
-        {
-            return true;
+        match toplevel.current_state().decoration_mode {
+            Some(smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode::ClientSide) => {
+                return true;
+            }
+            Some(smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode::ServerSide) => {
+                return false;
+            }
+            _ => {}
         }
     }
+    // Fallback heuristic only when the client didn't bind xdg-decoration
     let app_id = window_app_id(window).unwrap_or_default().to_lowercase();
     let title = window_title(window).unwrap_or_default().to_lowercase();
     app_id.contains("cursor")
