@@ -657,6 +657,9 @@ impl Aqua {
                                 crate::settings::SettingsAction::ApplyDisplay { width, height, scale } => {
                                     self.apply_display_mode(width, height, scale);
                                 }
+                                crate::settings::SettingsAction::CycleKeyboardLayout => {
+                                    self.cycle_keyboard_layout();
+                                }
                                 crate::settings::SettingsAction::ThemeChanged | crate::settings::SettingsAction::WallpaperChanged => {
                                     // Triggered automatic theme persistence and re-render
                                 }
@@ -741,6 +744,9 @@ impl Aqua {
                             }
                             UiAction::ToggleWifi => {
                                 self.wifi_menu.toggle();
+                            }
+                            UiAction::CycleKeyboardLayout => {
+                                self.cycle_keyboard_layout();
                             }
                         }
                         pointer.frame(self);

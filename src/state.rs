@@ -100,9 +100,14 @@ impl Aqua {
         // A seat typically has a pointer and maintains a keyboard focus and a pointer focus.
         let mut seat: Seat<Self> = seat_state.new_wl_seat(&dh, "winit");
 
-        // Notify clients that we have a keyboard, for the sake of the example we assume that keyboard is always present.
-        // You may want to track keyboard hot-plug in real compositor.
-        seat.add_keyboard(Default::default(), 200, 25).unwrap();
+        let xkb_config = smithay::input::keyboard::XkbConfig {
+            rules: "",
+            model: "",
+            layout: "us,ru",
+            variant: "",
+            options: Some("grp:alt_shift_toggle,grp:win_space_toggle".to_string()),
+        };
+        seat.add_keyboard(xkb_config, 200, 25).unwrap();
 
         // Notify clients that we have a pointer (mouse)
         // Here we assume that there is always pointer plugged in
@@ -375,9 +380,14 @@ impl Aqua {
 
     pub fn minimize_window(&mut self, window: &Window) {
         if let Some(key) = crate::render::window_key(window) {
-            let loc = self.space.element_location(window).unwrap_or_else(|| Point::from((48, 48)));
+            let loc = if let Some(&(saved_loc, _)) = self.maximized.get(&key) {
+                saved_loc
+            } else {
+                self.space.element_location(window).unwrap_or_else(|| Point::from((48, 48)))
+            };
             self.minimized_windows.insert(key, (window.clone(), loc));
             self.space.unmap_elem(window);
+            self.shell.invalidate_cache();
             if self.focused_window.as_ref() == Some(window) {
                 self.focused_window = None;
             }
@@ -390,6 +400,7 @@ impl Aqua {
             self.space.raise_element(&win, true);
             self.focus_window(&win);
             self.window_open_animations.insert(key, std::time::Instant::now());
+            self.shell.invalidate_cache();
         }
     }
 
@@ -398,6 +409,27 @@ impl Aqua {
             return;
         };
         self.close_window(&window);
+    }
+
+    pub fn current_layout_name(&mut self) -> String {
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            keyboard.with_xkb_state(self, |state| {
+                let xkb = state.xkb().lock().unwrap();
+                let active = xkb.active_layout();
+                xkb.layout_name(active).to_string()
+            })
+        } else {
+            "English (US)".to_string()
+        }
+    }
+
+    pub fn cycle_keyboard_layout(&mut self) {
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            keyboard.with_xkb_state(self, |mut state| {
+                state.cycle_next_layout();
+            });
+            self.shell.invalidate_cache();
+        }
     }
 
     pub fn close_window(&mut self, window: &Window) {

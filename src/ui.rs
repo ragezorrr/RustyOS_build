@@ -112,6 +112,7 @@ pub enum UiAction {
     ToggleControlCenter,
     ToggleNotifications,
     ToggleWifi,
+    CycleKeyboardLayout,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,6 +150,7 @@ struct PanelSig {
     battery: u8,
     charging: bool,
     network: crate::wifi::NetworkKind,
+    layout_name: String,
 }
 
 const APP_COUNT: usize = 6;
@@ -247,6 +249,7 @@ impl Shell {
         pointer_pos: Option<(f64, f64)>,
         dock_cfg: &crate::settings::DockConfig,
         network: crate::wifi::NetworkKind,
+        layout_name: &str,
     ) {
         let (app_name, app_category) = crate::spotlight::detect_app_category(
             focused_app_id.as_deref(),
@@ -262,10 +265,11 @@ impl Shell {
             battery: self.battery,
             charging: self.charging,
             network,
+            layout_name: layout_name.to_string(),
         };
         if self.panel_sig.as_ref() != Some(&panel_sig) {
             self.panel = Some(CachedBuffer {
-                buffer: self.build_panel(width, &app_name, app_category, minute, network),
+                buffer: self.build_panel(width, &app_name, app_category, minute, network, layout_name),
             });
             self.panel_sig = Some(panel_sig);
         }
@@ -347,7 +351,7 @@ impl Shell {
             self.wallpaper_sig = Some(wallpaper_sig);
         }
 
-        self.rebuild_hits(width, height, icon_size, &dynamic_apps, &minimized_items, &app_name, app_category);
+        self.rebuild_hits(width, height, icon_size, &dynamic_apps, &minimized_items, &app_name, app_category, layout_name);
     }
 
     // --- render elements --------------------------------------------------
@@ -442,6 +446,7 @@ impl Shell {
         minimized_items: &[MinimizedItem],
         app_name: &str,
         app_category: crate::spotlight::AppCategory,
+        layout_name: &str,
     ) {
         self.hits.clear();
 
@@ -454,7 +459,15 @@ impl Shell {
         let clock_x = width as f32 - 12.0 - clock_w;
         let cc_x = clock_x - 22.0;
         let spot_x = cc_x - 26.0;
-        let net_x = spot_x - 26.0;
+
+        let lang_code = if layout_name.to_lowercase().contains("ru") || layout_name.contains("Рус") {
+            "RU"
+        } else {
+            "US"
+        };
+        let lang_w = self.text.width_bold(lang_code, 12.0);
+        let lang_x = spot_x - 14.0 - lang_w;
+        let net_x = lang_x - 22.0;
         let bx = net_x - 42.0;
 
         // 1. Clock & Date hit area (click to toggle notifications)
@@ -484,7 +497,16 @@ impl Shell {
             action: UiAction::ToggleSpotlight,
         });
 
-        // 4. Network (Wi-Fi / Ethernet) hit area (opens network menu)
+        // 4. Keyboard Layout indicator hit area (click to cycle layout)
+        self.hits.push(Hit {
+            rect: Rectangle::new(
+                Point::from((lang_x as i32 - 6, 0)),
+                (lang_w as i32 + 12, PANEL_H).into(),
+            ),
+            action: UiAction::CycleKeyboardLayout,
+        });
+
+        // 5. Network (Wi-Fi / Ethernet) hit area (opens network menu)
         self.hits.push(Hit {
             rect: Rectangle::new(
                 Point::from((net_x as i32 - 12, 0)),
@@ -493,7 +515,7 @@ impl Shell {
             action: UiAction::ToggleWifi,
         });
 
-        // 5. Battery icon hit area
+        // 6. Battery icon hit area
         let show_battery = (self.battery < 100 && self.charging) || (self.battery <= 95 && !self.charging);
         if show_battery {
             self.hits.push(Hit {
@@ -646,6 +668,7 @@ impl Shell {
         app_category: crate::spotlight::AppCategory,
         minute: i64,
         network: crate::wifi::NetworkKind,
+        layout_name: &str,
     ) -> MemoryRenderBuffer {
         let w = width.max(1) as u32;
         let h = PANEL_H as u32;
@@ -698,8 +721,18 @@ impl Shell {
         let spot_x = cc_x - 26.0;
         draw_spotlight_icon(&mut pm, spot_x, 15.0, fg);
 
-        // 4. Network icon (Ethernet or Wi-Fi to the left of spotlight)
-        let net_x = spot_x - 26.0;
+        // 4. Keyboard layout indicator (to the left of spotlight, e.g. "RU" or "US")
+        let lang_code = if layout_name.to_lowercase().contains("ru") || layout_name.contains("Рус") {
+            "RU"
+        } else {
+            "US"
+        };
+        let lang_w = self.text.width_bold(lang_code, 12.0);
+        let lang_x = spot_x - 14.0 - lang_w;
+        self.text.draw_bold(&mut pm, lang_code, lang_x, 19.5, 12.0, fg);
+
+        // 5. Network icon (Ethernet or Wi-Fi to the left of language)
+        let net_x = lang_x - 22.0;
         match network {
             crate::wifi::NetworkKind::Ethernet => {
                 draw_ethernet(&mut pm, net_x, 15.0, fg);
@@ -712,7 +745,7 @@ impl Shell {
             }
         }
 
-        // 5. Battery icon (only shown when discharging or charging below 100%)
+        // 6. Battery icon (only shown when discharging or charging below 100%)
         let show_battery = (self.battery < 100 && self.charging) || (self.battery <= 95 && !self.charging);
         if show_battery {
             let bx = net_x - 42.0;

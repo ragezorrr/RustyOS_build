@@ -265,6 +265,8 @@ pub fn render(
         });
     }
 
+    let layout_name = state.current_layout_name();
+
     state.shell.ensure(
         geometry.size.w,
         geometry.size.h,
@@ -277,6 +279,7 @@ pub fn render(
         pointer_pos,
         &state.settings.dock,
         network_kind,
+        &layout_name,
     );
 
     let mut elements: Vec<AquaRenderElement<GlesRenderer>> = Vec::new();

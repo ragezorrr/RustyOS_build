@@ -18,6 +18,7 @@ pub enum SettingsTab {
     Displays,
     Wallpaper,
     Dock,
+    Keyboard,
     Appearance,
     About,
 }
@@ -28,6 +29,7 @@ pub enum SettingsAction {
     ThemeChanged,
     BrightnessChanged(f32),
     WallpaperChanged,
+    CycleKeyboardLayout,
     ApplyDisplay {
         width: i32,
         height: i32,
@@ -267,9 +269,12 @@ impl SettingsWindow {
                 self.current_tab = SettingsTab::Dock;
                 return SettingsAction::None;
             } else if local_y >= tab_y + tab_h * 3 && local_y < tab_y + tab_h * 4 {
-                self.current_tab = SettingsTab::Appearance;
+                self.current_tab = SettingsTab::Keyboard;
                 return SettingsAction::None;
             } else if local_y >= tab_y + tab_h * 4 && local_y < tab_y + tab_h * 5 {
+                self.current_tab = SettingsTab::Appearance;
+                return SettingsAction::None;
+            } else if local_y >= tab_y + tab_h * 5 && local_y < tab_y + tab_h * 6 {
                 self.current_tab = SettingsTab::About;
                 return SettingsAction::None;
             }
@@ -390,6 +395,12 @@ impl SettingsWindow {
                     return SettingsAction::None;
                 }
             }
+            SettingsTab::Keyboard => {
+                // Layout switch button click (cx: 10..220, cy: 110..150)
+                if cx >= 10 && cx < 220 && cy >= 110 && cy < 150 {
+                    return SettingsAction::CycleKeyboardLayout;
+                }
+            }
             SettingsTab::Appearance => {
                 // Dark mode card (cx: 10..140, cy: 40..125)
                 if cx >= 10 && cx < 140 && cy >= 40 && cy < 125 {
@@ -484,6 +495,7 @@ pub fn render_settings(
         (SettingsTab::Displays, "Дисплеи", [0, 122, 255, 255]),
         (SettingsTab::Wallpaper, "Обои", [255, 149, 0, 255]),
         (SettingsTab::Dock, "Dock & Меню", [175, 82, 222, 255]),
+        (SettingsTab::Keyboard, "Клавиатура", [52, 199, 89, 255]),
         (SettingsTab::Appearance, "Оформление", [142, 142, 147, 255]),
         (SettingsTab::About, "О системе", [100, 100, 110, 255]),
     ];
@@ -729,6 +741,39 @@ pub fn render_settings(
             let ind_y = cy + 214.0;
             text.draw_bold(&mut pm, "Индикаторы открытых программ", cx, ind_y + 16.0, 12.5, fg);
             draw_toggle(&mut pm, cx + 316.0, ind_y + 4.0, settings.dock.show_indicators, theme.accent);
+        }
+        SettingsTab::Keyboard => {
+            text.draw_bold(&mut pm, "Клавиатура и языки ввода", cx, cy + 16.0, 18.0, fg);
+            text.draw(&mut pm, "Настройка раскладок клавиатуры и сочетаний клавиш", cx, cy + 34.0, 11.0, fg_dim);
+
+            // Sources box
+            let box_y = cy + 54.0;
+            let box_w = 420.0;
+            let box_h = 130.0;
+            draw_round_rect(&mut pm, cx, box_y, box_w, box_h, 10.0, if dark { [40, 40, 48, 255] } else { [255, 255, 255, 255] });
+            stroke_round_rect(&mut pm, cx, box_y, box_w, box_h, 10.0, border, 1.0);
+
+            text.draw_bold(&mut pm, "Источники ввода (раскладки)", cx + 16.0, box_y + 24.0, 13.0, fg);
+
+            // Layout 1: English
+            draw_round_rect(&mut pm, cx + 16.0, box_y + 36.0, 388.0, 36.0, 6.0, if dark { [50, 50, 60, 255] } else { [240, 240, 245, 255] });
+            text.draw_bold(&mut pm, "🇺🇸 Английская (США) — US", cx + 28.0, box_y + 58.0, 12.5, fg);
+
+            // Layout 2: Russian
+            draw_round_rect(&mut pm, cx + 16.0, box_y + 78.0, 388.0, 36.0, 6.0, if dark { [50, 50, 60, 255] } else { [240, 240, 245, 255] });
+            text.draw_bold(&mut pm, "🇷🇺 Русская — RU", cx + 28.0, box_y + 100.0, 12.5, fg);
+
+            // Switching shortcuts section
+            let sc_y = box_y + box_h + 18.0;
+            text.draw_bold(&mut pm, "Сочетание клавиш для переключения", cx, sc_y + 14.0, 13.0, fg);
+            text.draw(&mut pm, "Для быстрой смены языка используйте: Win + Пробел, Alt + Shift или клик по индикатору в строке меню", cx, sc_y + 32.0, 11.0, fg_dim);
+
+            // Interactive switch button
+            let btn_y = sc_y + 46.0;
+            let btn_w = 210.0;
+            let btn_h = 34.0;
+            draw_round_rect(&mut pm, cx, btn_y, btn_w, btn_h, 8.0, theme.accent);
+            text.draw_bold(&mut pm, "Сменить раскладку сейчас", cx + 18.0, btn_y + 22.0, 12.0, [255, 255, 255, 255]);
         }
         SettingsTab::Appearance => {
             text.draw_bold(&mut pm, "Оформление интерфейса", cx, cy + 18.0, 18.0, fg);
