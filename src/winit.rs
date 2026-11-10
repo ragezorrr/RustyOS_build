@@ -115,7 +115,7 @@ pub fn init_winit(
                         toplevel.send_close();
                     }
                     state.space.unmap_elem(&window);
-                    state.deco.remove(key);
+                    state.deco.forget(key);
                 }
 
                 let size = backend.window_size();

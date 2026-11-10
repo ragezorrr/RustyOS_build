@@ -186,6 +186,7 @@ pub struct Shell {
     panel_sig: Option<PanelSig>,
     dock: Option<CachedBuffer>,
     dock_sig: Option<DockSig>,
+    dock_plate: Option<(i32, i32, bool, Pixmap)>,
     wallpaper: Option<CachedBuffer>,
     wallpaper_sig: Option<WallpaperSig>,
 
@@ -207,6 +208,7 @@ impl Shell {
             panel_sig: None,
             dock: None,
             dock_sig: None,
+            dock_plate: None,
             wallpaper: None,
             wallpaper_sig: None,
             hits: Vec::new(),
@@ -232,6 +234,7 @@ impl Shell {
     pub fn invalidate_cache(&mut self) {
         self.panel_sig = None;
         self.dock_sig = None;
+        self.dock_plate = None;
         self.wallpaper_sig = None;
     }
 
@@ -284,7 +287,12 @@ impl Shell {
                 && py >= (dock_y - DOCK_HEADROOM) as f64
                 && py < (dock_y + dock_h) as f64 + 10.0
             {
-                Some((px.round() as i32 - dock_x, py.round() as i32 - (dock_y - DOCK_HEADROOM)))
+                let raw_x = px.round() as i32 - dock_x;
+                let raw_y = py.round() as i32 - (dock_y - DOCK_HEADROOM);
+                // Quantize hover coordinates to 2px grid to eliminate subpixel micro-jitter
+                let q_x = (raw_x / 2) * 2;
+                let q_y = (raw_y / 2) * 2;
+                Some((q_x, q_y))
             } else {
                 None
             }
@@ -762,8 +770,111 @@ impl Shell {
         )
     }
 
+    fn ensure_dock_plate(&mut self, dw: i32, icon_size: i32, dark: bool, dynamic_len: usize) -> &Pixmap {
+        let needs_rebuild = match &self.dock_plate {
+            Some((w, sz, d, _)) => *w != dw || *sz != icon_size || *d != dark,
+            None => true,
+        };
+        if needs_rebuild {
+            let dock_h = icon_size + 20;
+            let total_dh = dock_h + DOCK_HEADROOM;
+            let mut pm = Pixmap::new(dw as u32, total_dh as u32).expect("dock plate pixmap");
+            let t = &self.theme;
+
+            let glass_y = DOCK_HEADROOM as f32;
+            let glass_h = dock_h as f32;
+            let plate_radius = (icon_size as f32 * 0.36).round().clamp(14.0, 24.0);
+
+            // Multi-layer physical soft drop shadow for elevation
+            let shadow_steps = 6;
+            for i in (0..shadow_steps).rev() {
+                let s_pad = (i + 1) as f32 * 1.6;
+                let y_off = 2.0 + (i as f32 * 1.1);
+                let alpha = match i {
+                    0 => 22,
+                    1 => 16,
+                    2 => 11,
+                    3 => 7,
+                    4 => 4,
+                    _ => 2,
+                };
+                squircle_rect(
+                    &mut pm,
+                    0.5 - s_pad,
+                    glass_y + y_off,
+                    dw as f32 - 1.0 + s_pad * 2.0,
+                    glass_h - 1.0 + s_pad,
+                    plate_radius + s_pad,
+                    [0, 0, 0, alpha],
+                );
+            }
+
+            // Glass plate body with frosted appearance
+            squircle_rect(
+                &mut pm,
+                0.5,
+                glass_y + 0.5,
+                dw as f32 - 1.0,
+                glass_h - 1.0,
+                plate_radius,
+                t.dock_bg(),
+            );
+
+            // Perimeter border
+            stroke_squircle(
+                &mut pm,
+                0.5,
+                glass_y + 0.5,
+                dw as f32 - 1.0,
+                glass_h - 1.0,
+                plate_radius,
+                t.dock_border(),
+                1.0,
+            );
+
+            // Top edge inner specular rim highlight (Sequoia glass)
+            stroke_squircle(
+                &mut pm,
+                1.5,
+                glass_y + 1.5,
+                dw as f32 - 3.0,
+                glass_h - 3.0,
+                (plate_radius - 1.0).max(1.0),
+                t.dock_top_rim(),
+                1.0,
+            );
+
+            // Bottom bounce specular reflection hairline
+            let bottom_rim_col = if t.dark() {
+                [255, 255, 255, 12]
+            } else {
+                [255, 255, 255, 60]
+            };
+            fill_rect(
+                &mut pm,
+                plate_radius * 0.8,
+                glass_y + glass_h - 2.0,
+                dw as f32 - plate_radius * 1.6,
+                1.0,
+                bottom_rim_col,
+            );
+
+            // Vertical separator line (dual-line etched groove)
+            let gap = (icon_size as f32 * 0.28).round() as i32;
+            let left_count = APPS.len() + dynamic_len;
+            let apps_w = left_count as i32 * icon_size + (left_count as i32 - 1) * gap;
+            let sep_x = (DOCK_PAD + apps_w + 8) as f32;
+            let (sep_dark, sep_light) = t.dock_separator();
+            fill_rect(&mut pm, sep_x, glass_y + 11.0, 1.0, glass_h - 22.0, sep_dark);
+            fill_rect(&mut pm, sep_x + 1.0, glass_y + 11.0, 1.0, glass_h - 22.0, sep_light);
+
+            self.dock_plate = Some((dw, icon_size, dark, pm));
+        }
+        &self.dock_plate.as_ref().unwrap().3
+    }
+
     fn build_dock(
-        &self,
+        &mut self,
         screen_w: i32,
         screen_h: i32,
         running: [bool; APP_COUNT],
@@ -778,87 +889,14 @@ impl Shell {
         let dw = dock_width_dynamic(icon_size, dynamic_apps.len(), minimized_items.len());
         let dock_h = icon_size + 20;
         let total_dh = dock_h + DOCK_HEADROOM;
-        let mut pm = Pixmap::new(dw as u32, total_dh as u32).expect("dock pixmap");
+        let dark = self.theme.dark();
+
+        let plate = self.ensure_dock_plate(dw, icon_size, dark, dynamic_apps.len());
+        let mut pm = plate.clone();
         let t = &self.theme;
 
         let glass_y = DOCK_HEADROOM as f32;
         let glass_h = dock_h as f32;
-        // Plate corner radius: ~ icon * 0.35 according to macOS design guidelines
-        let plate_radius = (icon_size as f32 * 0.36).round().clamp(14.0, 24.0);
-
-        // Multi-layer physical soft drop shadow for elevation
-        let shadow_steps = 6;
-        for i in (0..shadow_steps).rev() {
-            let s_pad = (i + 1) as f32 * 1.6;
-            let y_off = 2.0 + (i as f32 * 1.1);
-            let alpha = match i {
-                0 => 22,
-                1 => 16,
-                2 => 11,
-                3 => 7,
-                4 => 4,
-                _ => 2,
-            };
-            squircle_rect(
-                &mut pm,
-                0.5 - s_pad,
-                glass_y + y_off,
-                dw as f32 - 1.0 + s_pad * 2.0,
-                glass_h - 1.0 + s_pad,
-                plate_radius + s_pad,
-                [0, 0, 0, alpha],
-            );
-        }
-
-        // Glass plate body with frosted appearance
-        squircle_rect(
-            &mut pm,
-            0.5,
-            glass_y + 0.5,
-            dw as f32 - 1.0,
-            glass_h - 1.0,
-            plate_radius,
-            t.dock_bg(),
-        );
-
-        // Perimeter border
-        stroke_squircle(
-            &mut pm,
-            0.5,
-            glass_y + 0.5,
-            dw as f32 - 1.0,
-            glass_h - 1.0,
-            plate_radius,
-            t.dock_border(),
-            1.0,
-        );
-
-        // Top edge inner specular rim highlight (Sequoia glass)
-        stroke_squircle(
-            &mut pm,
-            1.5,
-            glass_y + 1.5,
-            dw as f32 - 3.0,
-            glass_h - 3.0,
-            (plate_radius - 1.0).max(1.0),
-            t.dock_top_rim(),
-            1.0,
-        );
-
-        // Bottom bounce specular reflection hairline
-        let bottom_rim_col = if t.dark() {
-            [255, 255, 255, 12]
-        } else {
-            [255, 255, 255, 60]
-        };
-        fill_rect(
-            &mut pm,
-            plate_radius * 0.8,
-            glass_y + glass_h - 2.0,
-            dw as f32 - plate_radius * 1.6,
-            1.0,
-            bottom_rim_col,
-        );
 
         let mut hovered_app = None;
 
@@ -948,15 +986,9 @@ impl Shell {
             }
         }
 
-        // Vertical separator line (dual-line etched groove)
+        // 3. Minimized window thumbnails (right of separator)
         let left_count = APPS.len() + dynamic_apps.len();
         let apps_w = left_count as i32 * icon_size + (left_count as i32 - 1) * gap;
-        let sep_x = (DOCK_PAD + apps_w + 8) as f32;
-        let (sep_dark, sep_light) = t.dock_separator();
-        fill_rect(&mut pm, sep_x, glass_y + 11.0, 1.0, glass_h - 22.0, sep_dark);
-        fill_rect(&mut pm, sep_x + 1.0, glass_y + 11.0, 1.0, glass_h - 22.0, sep_light);
-
-        // 3. Minimized window thumbnails (right of separator)
         for (i, min_item) in minimized_items.iter().enumerate() {
             let base_x = DOCK_PAD + apps_w + 16 + i as i32 * (icon_size + gap);
             let center_x = base_x as f32 + (icon_size as f32 / 2.0);

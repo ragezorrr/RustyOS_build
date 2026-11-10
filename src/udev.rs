@@ -396,7 +396,7 @@ pub fn run_udev(
                 toplevel.send_close();
             }
             data.state.space.unmap_elem(&window);
-            data.state.deco.remove(key);
+            data.state.deco.forget(key);
         }
 
         // Send frame callbacks to waiting clients on timer tick so client pacing stays smooth

@@ -59,10 +59,32 @@ pub fn read_hardware_brightness() -> Option<f32> {
     Some((cur as f32 / dev.max_brightness as f32).clamp(0.05, 1.0))
 }
 
+extern "C" {
+    fn getuid() -> u32;
+}
+
+fn prepare_audio_command(cmd: &str) -> Command {
+    let mut c = Command::new(cmd);
+    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+        c.env("XDG_RUNTIME_DIR", runtime_dir);
+    } else {
+        // Fallback to standard /run/user/<uid> if unset
+        let uid = unsafe { getuid() };
+        let fallback_path = format!("/run/user/{}", uid);
+        if Path::new(&fallback_path).exists() {
+            c.env("XDG_RUNTIME_DIR", fallback_path);
+        }
+    }
+    if let Ok(dbus_addr) = std::env::var("DBUS_SESSION_BUS_ADDRESS") {
+        c.env("DBUS_SESSION_BUS_ADDRESS", dbus_addr);
+    }
+    c
+}
+
 /// Read current system audio volume as a 0.0 .. 1.0 fraction.
 pub fn read_hardware_volume() -> Option<f32> {
     // 1. Try wpctl get-volume @DEFAULT_AUDIO_SINK@
-    if let Ok(output) = Command::new("wpctl").args(["get-volume", "@DEFAULT_AUDIO_SINK@"]).output() {
+    if let Ok(output) = prepare_audio_command("wpctl").args(["get-volume", "@DEFAULT_AUDIO_SINK@"]).output() {
         if output.status.success() {
             let s = String::from_utf8_lossy(&output.stdout);
             // Example: "Volume: 0.45" or "Volume: 0.45 [MUTED]"
@@ -75,7 +97,7 @@ pub fn read_hardware_volume() -> Option<f32> {
     }
 
     // 2. Try pactl get-sink-volume @DEFAULT_SINK@
-    if let Ok(output) = Command::new("pactl").args(["get-sink-volume", "@DEFAULT_SINK@"]).output() {
+    if let Ok(output) = prepare_audio_command("pactl").args(["get-sink-volume", "@DEFAULT_SINK@"]).output() {
         if output.status.success() {
             let s = String::from_utf8_lossy(&output.stdout);
             for part in s.split_whitespace() {
@@ -113,6 +135,18 @@ pub fn apply_hardware_brightness(val: f32) {
             return;
         }
 
+        // Try brightnessctl if available
+        let pct = (clamped * 100.0).round() as u32;
+        let pct_str = format!("{}%", pct);
+        if let Ok(status) = Command::new("brightnessctl")
+            .args(["set", &pct_str])
+            .status()
+        {
+            if status.success() {
+                return;
+            }
+        }
+
         // If direct sysfs write fails (unprivileged user), use logind via busctl
         let _ = Command::new("busctl")
             .args([
@@ -146,7 +180,7 @@ pub fn apply_hardware_volume(val: f32) {
 
     std::thread::spawn(move || {
         // 1. Try wpctl set-volume
-        if let Ok(status) = Command::new("wpctl")
+        if let Ok(status) = prepare_audio_command("wpctl")
             .args(["set-volume", "@DEFAULT_AUDIO_SINK@", &val_str])
             .status()
         {
@@ -156,7 +190,7 @@ pub fn apply_hardware_volume(val: f32) {
         }
 
         // 2. Try pactl set-sink-volume
-        if let Ok(status) = Command::new("pactl")
+        if let Ok(status) = prepare_audio_command("pactl")
             .args(["set-sink-volume", "@DEFAULT_SINK@", &pct_str])
             .status()
         {
@@ -166,7 +200,7 @@ pub fn apply_hardware_volume(val: f32) {
         }
 
         // 3. Fallback to ALSA amixer
-        let _ = Command::new("amixer")
+        let _ = prepare_audio_command("amixer")
             .args(["sset", "Master", &pct_str])
             .status();
     });

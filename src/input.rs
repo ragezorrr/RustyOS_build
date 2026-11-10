@@ -490,8 +490,8 @@ impl Aqua {
                                 pointer.frame(self);
                                 return;
                             }
-                            // 4. Brightness slider click
-                            if cx >= 24 && cx < 296 && cy >= 192 && cy < 216 {
+                            // 4. Brightness slider click (tile cy: 162..230)
+                            if cx >= 12 && cx < 308 && cy >= 162 && cy < 230 {
                                 let val = ((cx - 24) as f32 / 272.0).clamp(0.05, 1.0);
                                 self.control_center.brightness = val;
                                 self.settings.display.brightness = val;
@@ -501,8 +501,8 @@ impl Aqua {
                                 pointer.frame(self);
                                 return;
                             }
-                            // 5. Volume slider click
-                            if cx >= 24 && cx < 296 && cy >= 272 && cy < 296 {
+                            // 5. Volume slider click (tile cy: 242..310)
+                            if cx >= 12 && cx < 308 && cy >= 242 && cy < 310 {
                                 let val = ((cx - 24) as f32 / 272.0).clamp(0.0, 1.0);
                                 self.control_center.volume = val;
                                 crate::hardware::apply_hardware_volume(val);

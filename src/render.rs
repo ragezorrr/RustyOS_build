@@ -22,7 +22,7 @@ use smithay::{
     },
     desktop::Window,
     output::Output,
-    utils::{Logical, Physical, Point, Rectangle, Scale, Transform},
+    utils::{Logical, Physical, Point, Rectangle, Scale, Size, Transform},
     wayland::compositor::with_states,
     wayland::shell::xdg::XdgToplevelSurfaceData,
     reexports::wayland_server::Resource,
@@ -42,21 +42,19 @@ pub const TITLEBAR_H: i32 = 32;
 pub const SHADOW_PAD: i32 = 22;
 pub const RADIUS: f32 = 11.0;
 
+#[allow(dead_code)]
 struct Deco {
-    w: i32,
-    h: i32,
     dark: bool,
-    title: Option<String>,
-    focused: bool,
     is_csd: bool,
-    /// Shadow + window background + titlebar + outer border, drawn *behind* the client.
-    frame: MemoryRenderBuffer,
-    /// Thin rounded border drawn *above* the client, so edges stay crisp.
-    border: MemoryRenderBuffer,
 }
 
 pub struct DecoCache {
     windows: HashMap<u32, Deco>,
+    shadows: HashMap<(bool, bool, u32), MemoryRenderBuffer>,
+    bodies: HashMap<(bool, u32), MemoryRenderBuffer>,
+    rings: HashMap<(bool, u32), MemoryRenderBuffer>,
+    titlebar_bases: HashMap<(bool, bool), MemoryRenderBuffer>,
+    title_texts: HashMap<u32, (Option<String>, bool, bool, Option<(i32, MemoryRenderBuffer)>)>,
     lights: HashMap<(bool, bool, bool), MemoryRenderBuffer>,
     pub text: TextRenderer,
     cursor: Option<MemoryRenderBuffer>,
@@ -66,6 +64,11 @@ impl Default for DecoCache {
     fn default() -> Self {
         Self {
             windows: HashMap::new(),
+            shadows: HashMap::new(),
+            bodies: HashMap::new(),
+            rings: HashMap::new(),
+            titlebar_bases: HashMap::new(),
+            title_texts: HashMap::new(),
             lights: HashMap::new(),
             text: TextRenderer::new(),
             cursor: None,
@@ -74,23 +77,37 @@ impl Default for DecoCache {
 }
 
 impl DecoCache {
-    pub fn remove(&mut self, key: u32) {
+    pub fn forget(&mut self, key: u32) {
         self.windows.remove(&key);
+        self.title_texts.remove(&key);
+    }
+
+    pub fn remove(&mut self, key: u32) {
+        self.forget(key);
     }
 
     pub fn cursor(&mut self) -> &MemoryRenderBuffer {
         self.cursor.get_or_insert_with(default_cursor_buffer)
     }
 
-    fn deco(&mut self, key: u32, w: i32, h: i32, title: Option<&str>, focused: bool, is_csd: bool, theme: &Theme) -> &Deco {
-        let title_string = title.map(|s| s.to_string());
+    #[allow(dead_code)]
+    fn deco(&mut self, key: u32, is_csd: bool, theme: &Theme) -> &Deco {
         let stale = match self.windows.get(&key) {
-            Some(d) => d.w != w || d.h != h || d.dark != theme.dark() || d.title != title_string || d.focused != focused || d.is_csd != is_csd,
+            Some(d) => d.dark != theme.dark() || d.is_csd != is_csd,
             None => true,
         };
         if stale {
-            self.windows
-                .insert(key, build_deco(w, h, title, focused, is_csd, theme, &self.text));
+            if let Some(d) = self.windows.get(&key) {
+                tracing::debug!(
+                    key,
+                    dark_diff = d.dark != theme.dark(),
+                    csd_diff = d.is_csd != is_csd,
+                    "deco rebuild reason"
+                );
+            } else {
+                tracing::debug!(key, "deco rebuild reason: first build");
+            }
+            self.windows.insert(key, build_deco(is_csd, theme));
         }
         self.windows.get(&key).unwrap()
     }
@@ -99,6 +116,46 @@ impl DecoCache {
         self.lights
             .entry((dark, focused, hovered))
             .or_insert_with(|| build_lights(dark, focused, hovered))
+    }
+
+    fn shadow(&mut self, focused: bool, dark: bool, radius: u32) -> &MemoryRenderBuffer {
+        self.shadows
+            .entry((focused, dark, radius))
+            .or_insert_with(|| build_shadow(focused, dark, radius))
+    }
+
+    fn body(&mut self, dark: bool, radius: u32, theme: &Theme) -> &MemoryRenderBuffer {
+        self.bodies
+            .entry((dark, radius))
+            .or_insert_with(|| build_body(dark, radius, theme))
+    }
+
+    fn ring(&mut self, dark: bool, radius: u32, theme: &Theme) -> &MemoryRenderBuffer {
+        self.rings
+            .entry((dark, radius))
+            .or_insert_with(|| build_ring(dark, radius, theme))
+    }
+
+    fn titlebar_base(&mut self, focused: bool, dark: bool) -> &MemoryRenderBuffer {
+        self.titlebar_bases
+            .entry((focused, dark))
+            .or_insert_with(|| build_titlebar_base(focused, dark))
+    }
+
+    fn title_text(&mut self, window_key: u32, title: Option<&str>, focused: bool, dark: bool) -> Option<(i32, &MemoryRenderBuffer)> {
+        let title_string = title.map(|s| s.to_string());
+        let stale = match self.title_texts.get(&window_key) {
+            Some((t, f, d, _)) => t.as_deref() != title || *f != focused || *d != dark,
+            None => true,
+        };
+        if stale {
+            let buf = title.and_then(|t| {
+                let tw = self.text.width(t, 13.0).ceil().max(1.0) as i32;
+                build_title_text(t, focused, dark, &self.text).map(|b| (tw, b))
+            });
+            self.title_texts.insert(window_key, (title_string, focused, dark, buf));
+        }
+        self.title_texts.get(&window_key).and_then(|entry| entry.3.as_ref().map(|(w, b)| (*w, b)))
     }
 }
 
@@ -275,7 +332,6 @@ pub fn render(
 
     let layout_name = state.current_layout_name();
 
-    let t_ensure = std::time::Instant::now();
     state.shell.ensure(
         geometry.size.w,
         geometry.size.h,
@@ -290,38 +346,12 @@ pub fn render(
         network_kind,
         &layout_name,
     );
-    let d_ensure = t_ensure.elapsed();
-    if d_ensure.as_millis() >= 4 {
-        tracing::warn!(?d_ensure, "Slow shell.ensure stage");
-    }
 
-    let t_elements = std::time::Instant::now();
     let mut elements: Vec<AquaRenderElement<GlesRenderer>> = Vec::new();
 
-    let mut dur_wallpaper = std::time::Duration::ZERO;
-    let mut dur_deco_frame = std::time::Duration::ZERO;
-    let mut dur_surfaces = std::time::Duration::ZERO;
-    let mut dur_lights = std::time::Duration::ZERO;
-    let mut dur_border = std::time::Duration::ZERO;
-    let mut dur_panel = std::time::Duration::ZERO;
-    let mut dur_dock = std::time::Duration::ZERO;
-    let mut dur_menu = std::time::Duration::ZERO;
-    let mut dur_spotlight = std::time::Duration::ZERO;
-    let mut dur_control_center = std::time::Duration::ZERO;
-    let mut dur_switcher = std::time::Duration::ZERO;
-    let mut dur_settings = std::time::Duration::ZERO;
-    let mut dur_stage_manager = std::time::Duration::ZERO;
-    let mut dur_notifications = std::time::Duration::ZERO;
-    let mut dur_wifi_menu = std::time::Duration::ZERO;
-    let mut dur_desktop_menu = std::time::Duration::ZERO;
-    let mut dur_osd = std::time::Duration::ZERO;
-    let mut dur_cursor = std::time::Duration::ZERO;
-
-    let t0 = std::time::Instant::now();
     if let Some(elem) = state.shell.wallpaper_element(renderer) {
         elements.push(AquaRenderElement::Memory(elem));
     }
-    dur_wallpaper += t0.elapsed();
 
     let now = std::time::Instant::now();
 
@@ -359,40 +389,76 @@ pub fn render(
 
         // Shadow, background, titlebar and outer border (behind the client).
         if !is_csd && !is_fullscreen {
-            let t0 = std::time::Instant::now();
-            let deco = state.deco.deco(key, size.w, size.h, title.as_deref(), focused, is_csd, &state.shell.theme);
-            let pos = Point::<f64, Physical>::from((
-                (loc.x - SHADOW_PAD) as f64,
-                (loc.y - SHADOW_PAD) as f64,
-            ));
-            if let Ok(elem) = MemoryRenderBufferRenderElement::from_buffer(
+            let shadow_buf = state.deco.shadow(focused, dark, RADIUS as u32);
+            let corner_shadow = SHADOW_PAD + RADIUS.ceil() as i32; // 33 px
+            let total_h = size.h + TITLEBAR_H;
+            push_nine_slice(
+                &mut elements,
                 renderer,
-                pos,
-                &deco.frame,
-                alpha.into(),
-                None,
-                None,
-                Kind::Unspecified,
-            ) {
-                elements.push(AquaRenderElement::Memory(elem));
+                shadow_buf,
+                Point::from((loc.x - SHADOW_PAD, loc.y - SHADOW_PAD)),
+                (size.w + SHADOW_PAD * 2, total_h + SHADOW_PAD * 2),
+                corner_shadow,
+                false,
+                alpha,
+            );
+
+            let body_buf = state.deco.body(dark, RADIUS as u32, &state.shell.theme);
+            let corner_body = RADIUS as i32 + 2; // 13 px
+            push_nine_slice(
+                &mut elements,
+                renderer,
+                body_buf,
+                Point::from((loc.x, loc.y)),
+                (size.w, total_h),
+                corner_body,
+                false,
+                alpha,
+            );
+
+            let titlebar_buf = state.deco.titlebar_base(focused, dark);
+            let corner_title = RADIUS as i32 + 2; // 13 px
+            push_three_slice(
+                &mut elements,
+                renderer,
+                titlebar_buf,
+                Point::from((loc.x, loc.y)),
+                size.w,
+                TITLEBAR_H,
+                corner_title,
+                alpha,
+            );
+
+            if let Some((text_w, text_buf)) = state.deco.title_text(key, title.as_deref(), focused, dark) {
+                let title_x = loc.x + (size.w - text_w) / 2;
+                if title_x > loc.x + 80 {
+                    let text_pos = Point::<f64, Physical>::from((title_x as f64, loc.y as f64));
+                    if let Ok(elem) = MemoryRenderBufferRenderElement::from_buffer(
+                        renderer,
+                        text_pos,
+                        text_buf,
+                        alpha.into(),
+                        None,
+                        None,
+                        Kind::Unspecified,
+                    ) {
+                        elements.push(AquaRenderElement::Memory(elem));
+                    }
+                }
             }
-            dur_deco_frame += t0.elapsed();
         }
 
         // Client surface (and popups) shifted down by titlebar_h (0 for CSD windows).
         // For Wayland clients, window.geometry().loc accounts for client-side window margins/shadows.
-        let t0 = std::time::Instant::now();
         let geom_loc = window.geometry().loc;
         let client_loc = Point::from((loc.x - geom_loc.x, loc.y + titlebar_h - geom_loc.y));
         let loc_phys = client_loc.to_physical_precise_round(scale_s);
         let surface_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
             window.render_elements(renderer, loc_phys, scale_s, alpha);
         elements.extend(surface_elements.into_iter().map(AquaRenderElement::Surface));
-        dur_surfaces += t0.elapsed();
 
         // Traffic lights (in titlebar above the background, only for non-CSD windows).
         if !is_csd && !is_fullscreen {
-            let t0 = std::time::Instant::now();
             let pointer_pos = state.seat.get_pointer().map(|p| p.current_location());
             let lights_hovered = pointer_pos.map_or(false, |pos| {
                 traffic_light_at(loc, pos).is_some()
@@ -413,46 +479,38 @@ pub fn render(
             ) {
                 elements.push(AquaRenderElement::Memory(elem));
             }
-            dur_lights += t0.elapsed();
         }
 
         // Crisp rounded border above the window (SSD only).
         if !is_csd && !is_fullscreen {
-            let t0 = std::time::Instant::now();
-            let deco = state.deco.deco(key, size.w, size.h, title.as_deref(), focused, is_csd, &state.shell.theme);
-            let pos = Point::<f64, Physical>::from((loc.x as f64, loc.y as f64));
-            if let Ok(elem) = MemoryRenderBufferRenderElement::from_buffer(
+            let ring_buf = state.deco.ring(dark, RADIUS as u32, &state.shell.theme);
+            let corner_ring = RADIUS as i32 + 2; // 13 px
+            let total_h = size.h + TITLEBAR_H;
+            push_nine_slice(
+                &mut elements,
                 renderer,
-                pos,
-                &deco.border,
-                alpha.into(),
-                None,
-                None,
-                Kind::Unspecified,
-            ) {
-                elements.push(AquaRenderElement::Memory(elem));
-            }
-            dur_border += t0.elapsed();
+                ring_buf,
+                Point::from((loc.x, loc.y)),
+                (size.w, total_h),
+                corner_ring,
+                true,
+                alpha,
+            );
         }
     }
 
-    let t0 = std::time::Instant::now();
     if let Some(elem) = state.shell.panel_element(renderer) {
         elements.push(AquaRenderElement::Memory(elem));
     }
-    dur_panel += t0.elapsed();
 
-    let t0 = std::time::Instant::now();
     if let Some(elem) = state
         .shell
         .dock_element(renderer, geometry.size.w, geometry.size.h)
     {
         elements.push(AquaRenderElement::Memory(elem));
     }
-    dur_dock += t0.elapsed();
 
     // Dropdown menu (if open)
-    let t0 = std::time::Instant::now();
     if let Some(ref active) = state.menu.active_menu {
         let menu_pos = active.1;
         let pointer_pos = state.seat.get_pointer().map(|p| {
@@ -474,10 +532,8 @@ pub fn render(
             }
         }
     }
-    dur_menu += t0.elapsed();
 
     // Spotlight search window (if open)
-    let t0 = std::time::Instant::now();
     if state.spotlight.open {
         if let Some(buf) = crate::spotlight::render_spotlight(&state.spotlight, &state.shell.theme, &state.deco.text) {
             let spot_x = (geometry.size.w - 620) / 2;
@@ -496,10 +552,8 @@ pub fn render(
             }
         }
     }
-    dur_spotlight += t0.elapsed();
 
     // Control Center (if open)
-    let t0 = std::time::Instant::now();
     if state.control_center.open {
         let pointer_pos = state.seat.get_pointer().map(|p| {
             let loc = p.current_location();
@@ -522,10 +576,8 @@ pub fn render(
             }
         }
     }
-    dur_control_center += t0.elapsed();
 
     // App Switcher overlay (Super + Tab)
-    let t0 = std::time::Instant::now();
     if state.switcher.active {
         if let Some(buf) = crate::control_center::render_app_switcher(&state.switcher, &state.shell.theme, &state.deco.text) {
             let count = state.switcher.items.len();
@@ -546,10 +598,8 @@ pub fn render(
             }
         }
     }
-    dur_switcher += t0.elapsed();
 
     // System Settings window (if open)
-    let t0 = std::time::Instant::now();
     if state.settings.open {
         if let Some(buf) = crate::settings::render_settings(&state.settings, &state.shell.theme, &state.deco.text) {
             let (set_x, set_y) = state.settings.loc.unwrap_or_else(|| {
@@ -572,10 +622,8 @@ pub fn render(
             }
         }
     }
-    dur_settings += t0.elapsed();
 
     // Stage Manager (left sidebar thumbnails)
-    let t0 = std::time::Instant::now();
     if state.stage_manager.enabled {
         if let Some((sm_h, buf)) = crate::desktop_menu::render_stage_manager(
             &state.stage_manager,
@@ -602,10 +650,8 @@ pub fn render(
             }
         }
     }
-    dur_stage_manager += t0.elapsed();
 
     // Notification Center History Panel (slide-out from right)
-    let t0 = std::time::Instant::now();
     if state.notifications.panel_open {
         if let Some(buf) = crate::notifications::render_nc_panel(
             &state.notifications,
@@ -628,10 +674,8 @@ pub fn render(
             }
         }
     }
-    dur_notifications += t0.elapsed();
 
     // Floating Notification Toasts (top-right)
-    let t0 = std::time::Instant::now();
     for (toast_y, buf) in crate::notifications::render_toasts(
         &state.notifications,
         &state.shell.theme,
@@ -652,10 +696,8 @@ pub fn render(
             elements.push(AquaRenderElement::Memory(elem));
         }
     }
-    dur_notifications += t0.elapsed();
 
     // Wi-Fi Dropdown Menu (if open)
-    let t0 = std::time::Instant::now();
     if state.wifi_menu.open {
         let wifi_menu_x = (geometry.size.w - crate::wifi::WIFI_MENU_W - 90).max(10);
         let wifi_menu_y = ui::PANEL_H + 6;
@@ -681,10 +723,8 @@ pub fn render(
             }
         }
     }
-    dur_wifi_menu += t0.elapsed();
 
     // Desktop Context Menu (right click on wallpaper)
-    let t0 = std::time::Instant::now();
     if state.desktop_menu.open {
         if let Some(buf) = crate::desktop_menu::render_desktop_menu(
             &state.desktop_menu,
@@ -709,10 +749,8 @@ pub fn render(
             }
         }
     }
-    dur_desktop_menu += t0.elapsed();
 
     // OSD HUD Overlay (Volume/Brightness centered)
-    let t0 = std::time::Instant::now();
     state.osd.update();
     if let Some(buf) = crate::notifications::render_osd(
         &state.osd,
@@ -734,11 +772,9 @@ pub fn render(
             elements.push(AquaRenderElement::Memory(elem));
         }
     }
-    dur_osd += t0.elapsed();
 
     // Hardware/Software mouse cursor for native sessions (TTY/DRM)
     // If hardware_cursor is enabled in DRM, skip rendering software cursor in framebuffer
-    let t0 = std::time::Instant::now();
     if let Some(pos) = pointer_pos {
         let cursor_status = state.cursor_status.lock().ok().map(|s| s.clone());
         match cursor_status {
@@ -777,7 +813,6 @@ pub fn render(
             }
         }
     }
-    dur_cursor += t0.elapsed();
 
     let clear = state.shell.theme.wallpaper_bottom();
     let clear = [
@@ -791,49 +826,7 @@ pub fn render(
     // (it renders the list reversed), while we built it bottom-to-top.
     elements.reverse();
 
-    let d_elements = t_elements.elapsed();
-    if d_elements.as_millis() >= 4 {
-        let blocks = [
-            ("wallpaper", dur_wallpaper),
-            ("deco_frame", dur_deco_frame),
-            ("surfaces", dur_surfaces),
-            ("lights", dur_lights),
-            ("border", dur_border),
-            ("panel", dur_panel),
-            ("dock", dur_dock),
-            ("menu", dur_menu),
-            ("spotlight", dur_spotlight),
-            ("control_center", dur_control_center),
-            ("switcher", dur_switcher),
-            ("settings", dur_settings),
-            ("stage_manager", dur_stage_manager),
-            ("notifications", dur_notifications),
-            ("wifi_menu", dur_wifi_menu),
-            ("desktop_menu", dur_desktop_menu),
-            ("osd", dur_osd),
-            ("cursor", dur_cursor),
-        ];
-        let slow_blocks: Vec<String> = blocks
-            .iter()
-            .filter(|(_, d)| d.as_millis() >= 1)
-            .map(|(name, d)| format!("block={} ms={:.2}", name, d.as_secs_f64() * 1000.0))
-            .collect();
-
-        tracing::warn!(
-            total_ms = format_args!("{:.2}", d_elements.as_secs_f64() * 1000.0),
-            element_count = elements.len(),
-            slow = slow_blocks.join(", "),
-            "Slow elements assembly"
-        );
-    }
-
-    let t_render_out = std::time::Instant::now();
     let res = damage_tracker.render_output(renderer, framebuffer, 0, &elements, clear)?;
-    let d_render_out = t_render_out.elapsed();
-    if d_render_out.as_millis() >= 4 {
-        tracing::warn!(?d_render_out, "Slow damage_tracker.render_output stage");
-    }
-
     let has_damage = res.damage.map_or(false, |d| !d.is_empty());
     Ok(has_damage)
 }
@@ -854,233 +847,15 @@ fn running_apps(windows: &[Window]) -> [bool; 6] {
     running
 }
 
+#[allow(dead_code)]
 fn build_deco(
-    w: i32,
-    h: i32,
-    title: Option<&str>,
-    focused: bool,
     is_csd: bool,
     theme: &Theme,
-    text_renderer: &TextRenderer,
 ) -> Deco {
-    let total_h = if is_csd { h } else { h + TITLEBAR_H };
-    let pw = (w + SHADOW_PAD * 2).max(1) as u32;
-    let ph = (total_h + SHADOW_PAD * 2).max(1) as u32;
-    let mut pm = tiny_skia::Pixmap::new(pw, ph).expect("deco pixmap");
     let dark = theme.dark();
-
-    // Soft drop shadow: subtle and elegant macOS style.
-    let shadow = if dark {
-        [0u8, 0, 0, 8]
-    } else {
-        [0u8, 0, 0, 5]
-    };
-    for i in (0..12).rev() {
-        let grow = i as f32 * 1.2;
-        rounded(
-            &mut pm,
-            SHADOW_PAD as f32 - grow,
-            SHADOW_PAD as f32 - grow + 3.0,
-            w as f32 + grow * 2.0,
-            total_h as f32 + grow * 2.0,
-            RADIUS + grow,
-            shadow,
-        );
-    }
-
-    // Window background (and titlebar for SSD).
-    if w > 0 && total_h > 0 {
-        let bg = if dark {
-            [31.0, 31.0, 35.0, 255.0]
-        } else {
-            [250.0, 250.0, 252.0, 255.0]
-        };
-        let mut paint = tiny_skia::Paint::default();
-        paint.set_color_rgba8(bg[0] as u8, bg[1] as u8, bg[2] as u8, bg[3] as u8);
-        let path = round_rect(
-            SHADOW_PAD as f32,
-            SHADOW_PAD as f32,
-            w as f32,
-            total_h as f32,
-            RADIUS,
-        );
-        pm.fill_path(
-            &path,
-            &paint,
-            tiny_skia::FillRule::Winding,
-            tiny_skia::Transform::identity(),
-            None,
-        );
-
-        if !is_csd {
-            // macOS titlebar header fill
-            let titlebar_bg = if dark {
-                if focused {
-                    [38u8, 38, 44, 255]
-                } else {
-                    [32u8, 32, 36, 255]
-                }
-            } else {
-                if focused {
-                    [236u8, 236, 240, 255]
-                } else {
-                    [245u8, 245, 248, 255]
-                }
-            };
-
-            // Draw top rounded titlebar
-            let mut tpb = tiny_skia::PathBuilder::new();
-            let tx = SHADOW_PAD as f32;
-            let ty = SHADOW_PAD as f32;
-            let tw = w as f32;
-            let th = TITLEBAR_H as f32;
-            let r = RADIUS.min(tw / 2.0).min(th);
-            let k = 0.552_284_8 * r;
-            tpb.move_to(tx + r, ty);
-            tpb.line_to(tx + tw - r, ty);
-            tpb.cubic_to(tx + tw - r + k, ty, tx + tw, ty + r - k, tx + tw, ty + r);
-            tpb.line_to(tx + tw, ty + th);
-            tpb.line_to(tx, ty + th);
-            tpb.line_to(tx, ty + r);
-            tpb.cubic_to(tx, ty + r - k, tx + r - k, ty, tx + r, ty);
-            tpb.close();
-            if let Some(tpath) = tpb.finish() {
-                let mut paint = tiny_skia::Paint::default();
-                paint.set_color_rgba8(titlebar_bg[0], titlebar_bg[1], titlebar_bg[2], titlebar_bg[3]);
-                pm.fill_path(
-                    &tpath,
-                    &paint,
-                    tiny_skia::FillRule::Winding,
-                    tiny_skia::Transform::identity(),
-                    None,
-                );
-            }
-
-            // Titlebar bottom hairline separator
-            let sep_color = if dark {
-                [0u8, 0, 0, 80]
-            } else {
-                [0u8, 0, 0, 35]
-            };
-            let mut paint = tiny_skia::Paint::default();
-            paint.set_color_rgba8(sep_color[0], sep_color[1], sep_color[2], sep_color[3]);
-            if let Some(rect) = tiny_skia::Rect::from_xywh(tx, ty + th - 1.0, tw, 1.0) {
-                pm.fill_rect(rect, &paint, tiny_skia::Transform::identity(), None);
-            }
-
-            // Window title in the center of the titlebar
-            if let Some(t) = title {
-                if !t.is_empty() {
-                    let text_color = if dark {
-                        if focused { [230u8, 230, 235, 255] } else { [140u8, 140, 145, 255] }
-                    } else {
-                        if focused { [40u8, 40, 45, 255] } else { [140u8, 140, 145, 255] }
-                    };
-                    let tw_text = text_renderer.width(t, 13.0);
-                    let title_x = tx + (tw - tw_text) / 2.0;
-                    // Only draw if it doesn't collide with the traffic lights (at tx + 14..tx + 70)
-                    if title_x > tx + 80.0 {
-                        let baseline = ty + 20.5;
-                        text_renderer.draw(&mut pm, t, title_x, baseline, 13.0, text_color);
-                    }
-                }
-            }
-        }
-    }
-
-    // Outer border.
-    stroke_round(
-        &mut pm,
-        SHADOW_PAD as f32,
-        SHADOW_PAD as f32,
-        w as f32,
-        total_h as f32,
-        RADIUS,
-        theme.window_border(),
-        1.0,
-    );
-
-    let frame = MemoryRenderBuffer::from_slice(
-        pm.data(),
-        Fourcc::Abgr8888,
-        (pw as i32, ph as i32),
-        1,
-        Transform::Normal,
-        None,
-    );
-
-    // Border and corner masks drawn above the client so sharp corners are rounded.
-    let mut bpm = tiny_skia::Pixmap::new(w.max(1) as u32, total_h.max(1) as u32).expect("border pixmap");
-    let border = theme.window_border();
-
-    // Mask bottom sharp corners of client surface to match RADIUS
-    let corner_mask_color = if dark {
-        [31u8, 31, 35, 255]
-    } else {
-        [250u8, 250, 252, 255]
-    };
-    let r_f = RADIUS;
-    // Bottom-left corner mask
-    {
-        let mut pb = tiny_skia::PathBuilder::new();
-        let bx = 0.0;
-        let by = total_h as f32 - r_f;
-        pb.move_to(bx, by);
-        pb.line_to(bx, by + r_f);
-        pb.line_to(bx + r_f, by + r_f);
-        pb.cubic_to(bx + r_f * (1.0 - 0.552_284_8), by + r_f, bx, by + r_f * 0.552_284_8, bx, by);
-        pb.close();
-        if let Some(p) = pb.finish() {
-            let mut paint = tiny_skia::Paint::default();
-            paint.set_color_rgba8(corner_mask_color[0], corner_mask_color[1], corner_mask_color[2], corner_mask_color[3]);
-            bpm.fill_path(&p, &paint, tiny_skia::FillRule::Winding, tiny_skia::Transform::identity(), None);
-        }
-    }
-    // Bottom-right corner mask
-    {
-        let mut pb = tiny_skia::PathBuilder::new();
-        let bx = w as f32 - r_f;
-        let by = total_h as f32 - r_f;
-        pb.move_to(bx + r_f, by);
-        pb.line_to(bx + r_f, by + r_f);
-        pb.line_to(bx, by + r_f);
-        pb.cubic_to(bx + r_f * 0.552_284_8, by + r_f, bx + r_f, by + r_f * 0.552_284_8, bx + r_f, by);
-        pb.close();
-        if let Some(p) = pb.finish() {
-            let mut paint = tiny_skia::Paint::default();
-            paint.set_color_rgba8(corner_mask_color[0], corner_mask_color[1], corner_mask_color[2], corner_mask_color[3]);
-            bpm.fill_path(&p, &paint, tiny_skia::FillRule::Winding, tiny_skia::Transform::identity(), None);
-        }
-    }
-
-    stroke_round(
-        &mut bpm,
-        0.5,
-        0.5,
-        w as f32 - 1.0,
-        total_h as f32 - 1.0,
-        RADIUS,
-        [border[0], border[1], border[2], border[3].min(70)],
-        1.0,
-    );
-    let buffer = MemoryRenderBuffer::from_slice(
-        bpm.data(),
-        Fourcc::Abgr8888,
-        (w.max(1), total_h.max(1)),
-        1,
-        Transform::Normal,
-        None,
-    );
-
     Deco {
-        w,
-        h,
         dark,
-        title: title.map(|s| s.to_string()),
-        focused,
         is_csd,
-        frame,
-        border: buffer,
     }
 }
 
@@ -1183,6 +958,358 @@ fn build_lights(dark: bool, focused: bool, hovered: bool) -> MemoryRenderBuffer 
         pm.data(),
         Fourcc::Abgr8888,
         (56, 14),
+        1,
+        Transform::Normal,
+        None,
+    )
+}
+
+fn push_three_slice<R: smithay::backend::renderer::Renderer>(
+    elements: &mut Vec<AquaRenderElement<R>>,
+    renderer: &mut R,
+    buffer: &MemoryRenderBuffer,
+    loc: Point<i32, Logical>,
+    width: i32,
+    height: i32,
+    corner: i32,
+    alpha: f32,
+) where
+    R: ImportAll + ImportMem,
+    R::TextureId: Clone + Send + 'static,
+{
+    let mid_src = 8;
+    let mid_dst = (width - 2 * corner).max(0);
+
+    let slices: [((f64, f64, f64, f64), (i32, i32, i32, i32)); 3] = [
+        // Left corner
+        (((0.0, 0.0, corner as f64, height as f64)), (loc.x, loc.y, corner, height)),
+        // Middle stretched
+        (((corner as f64, 0.0, mid_src as f64, height as f64)), (loc.x + corner, loc.y, mid_dst, height)),
+        // Right corner
+        ((((corner + mid_src) as f64, 0.0, corner as f64, height as f64)), (loc.x + width - corner, loc.y, corner, height)),
+    ];
+
+    for (src, dst) in slices {
+        if dst.2 > 0 && dst.3 > 0 {
+            let src_rect = Rectangle::new(Point::from((src.0, src.1)), Size::from((src.2, src.3)));
+            let dst_size = Size::from((dst.2, dst.3));
+            let dst_pos = Point::<f64, Physical>::from((dst.0 as f64, dst.1 as f64));
+            if let Ok(elem) = MemoryRenderBufferRenderElement::from_buffer(
+                renderer,
+                dst_pos,
+                buffer,
+                alpha.into(),
+                Some(src_rect),
+                Some(dst_size),
+                Kind::Unspecified,
+            ) {
+                elements.push(AquaRenderElement::Memory(elem));
+            }
+        }
+    }
+}
+
+fn build_titlebar_base(focused: bool, dark: bool) -> MemoryRenderBuffer {
+    let r_base = RADIUS;
+    let corner = RADIUS as i32 + 2; // 13 px
+    let mid = 8;
+    let total_w = (corner * 2 + mid) as u32; // 34 px
+    let total_h = TITLEBAR_H as u32; // 32 px
+    let mut pm = tiny_skia::Pixmap::new(total_w, total_h).expect("titlebar base pixmap");
+
+    let titlebar_bg = if dark {
+        if focused {
+            [38u8, 38, 44, 255]
+        } else {
+            [32u8, 32, 36, 255]
+        }
+    } else {
+        if focused {
+            [236u8, 236, 240, 255]
+        } else {
+            [245u8, 245, 248, 255]
+        }
+    };
+
+    let mut tpb = tiny_skia::PathBuilder::new();
+    let tx = 0.0f32;
+    let ty = 0.0f32;
+    let tw = total_w as f32;
+    let th = total_h as f32;
+    let r = r_base;
+    let k = 0.552_284_8 * r;
+    tpb.move_to(tx + r, ty);
+    tpb.line_to(tx + tw - r, ty);
+    tpb.cubic_to(tx + tw - r + k, ty, tx + tw, ty + r - k, tx + tw, ty + r);
+    tpb.line_to(tx + tw, ty + th);
+    tpb.line_to(tx, ty + th);
+    tpb.line_to(tx, ty + r);
+    tpb.cubic_to(tx, ty + r - k, tx + r - k, ty, tx + r, ty);
+    tpb.close();
+    if let Some(tpath) = tpb.finish() {
+        let mut paint = tiny_skia::Paint::default();
+        paint.set_color_rgba8(titlebar_bg[0], titlebar_bg[1], titlebar_bg[2], titlebar_bg[3]);
+        pm.fill_path(
+            &tpath,
+            &paint,
+            tiny_skia::FillRule::Winding,
+            tiny_skia::Transform::identity(),
+            None,
+        );
+    }
+
+    // Titlebar bottom hairline separator
+    let sep_color = if dark {
+        [0u8, 0, 0, 80]
+    } else {
+        [0u8, 0, 0, 35]
+    };
+    let mut paint = tiny_skia::Paint::default();
+    paint.set_color_rgba8(sep_color[0], sep_color[1], sep_color[2], sep_color[3]);
+    if let Some(rect) = tiny_skia::Rect::from_xywh(tx, ty + th - 1.0, tw, 1.0) {
+        pm.fill_rect(rect, &paint, tiny_skia::Transform::identity(), None);
+    }
+
+    MemoryRenderBuffer::from_slice(
+        pm.data(),
+        Fourcc::Abgr8888,
+        (total_w as i32, total_h as i32),
+        1,
+        Transform::Normal,
+        None,
+    )
+}
+
+fn build_title_text(title: &str, focused: bool, dark: bool, text_renderer: &TextRenderer) -> Option<MemoryRenderBuffer> {
+    if title.is_empty() {
+        return None;
+    }
+    let tw_text = text_renderer.width(title, 13.0);
+    let pw = tw_text.ceil().max(1.0) as u32;
+    let ph = TITLEBAR_H as u32;
+    let mut pm = tiny_skia::Pixmap::new(pw, ph)?;
+
+    let text_color = if dark {
+        if focused { [230u8, 230, 235, 255] } else { [140u8, 140, 145, 255] }
+    } else {
+        if focused { [40u8, 40, 45, 255] } else { [140u8, 140, 145, 255] }
+    };
+    let baseline = 20.5;
+    text_renderer.draw(&mut pm, title, 0.0, baseline, 13.0, text_color);
+
+    Some(MemoryRenderBuffer::from_slice(
+        pm.data(),
+        Fourcc::Abgr8888,
+        (pw as i32, ph as i32),
+        1,
+        Transform::Normal,
+        None,
+    ))
+}
+
+fn push_nine_slice<R: smithay::backend::renderer::Renderer>(
+    elements: &mut Vec<AquaRenderElement<R>>,
+    renderer: &mut R,
+    buffer: &MemoryRenderBuffer,
+    loc: Point<i32, Logical>,
+    size: (i32, i32),
+    corner: i32,
+    skip_center: bool,
+    alpha: f32,
+) where
+    R: ImportAll + ImportMem,
+    R::TextureId: Clone + Send + 'static,
+{
+    let mid = 8;
+    let dst_w = size.0;
+    let dst_h = size.1;
+    let mid_w = (dst_w - 2 * corner).max(0);
+    let mid_h = (dst_h - 2 * corner).max(0);
+
+    let slices: [((f64, f64, f64, f64), (i32, i32, i32, i32), bool); 9] = [
+        // Top row
+        (((0.0, 0.0, corner as f64, corner as f64)), (loc.x, loc.y, corner, corner), false),
+        (((corner as f64, 0.0, mid as f64, corner as f64)), (loc.x + corner, loc.y, mid_w, corner), false),
+        ((((corner + mid) as f64, 0.0, corner as f64, corner as f64)), (loc.x + dst_w - corner, loc.y, corner, corner), false),
+        // Middle row
+        (((0.0, corner as f64, corner as f64, mid as f64)), (loc.x, loc.y + corner, corner, mid_h), false),
+        (((corner as f64, corner as f64, mid as f64, mid as f64)), (loc.x + corner, loc.y + corner, mid_w, mid_h), true),
+        ((((corner + mid) as f64, corner as f64, corner as f64, mid as f64)), (loc.x + dst_w - corner, loc.y + corner, corner, mid_h), false),
+        // Bottom row
+        (((0.0, (corner + mid) as f64, corner as f64, corner as f64)), (loc.x, loc.y + dst_h - corner, corner, corner), false),
+        (((corner as f64, (corner + mid) as f64, mid as f64, corner as f64)), (loc.x + corner, loc.y + dst_h - corner, mid_w, corner), false),
+        ((((corner + mid) as f64, (corner + mid) as f64, corner as f64, corner as f64)), (loc.x + dst_w - corner, loc.y + dst_h - corner, corner, corner), false),
+    ];
+
+    for (src, dst, is_center) in slices {
+        if is_center && skip_center {
+            continue;
+        }
+        if dst.2 > 0 && dst.3 > 0 {
+            let src_rect = Rectangle::new(Point::from((src.0, src.1)), Size::from((src.2, src.3)));
+            let dst_size = Size::from((dst.2, dst.3));
+            let dst_pos = Point::<f64, Physical>::from((dst.0 as f64, dst.1 as f64));
+            if let Ok(elem) = MemoryRenderBufferRenderElement::from_buffer(
+                renderer,
+                dst_pos,
+                buffer,
+                alpha.into(),
+                Some(src_rect),
+                Some(dst_size),
+                Kind::Unspecified,
+            ) {
+                elements.push(AquaRenderElement::Memory(elem));
+            }
+        }
+    }
+}
+
+fn build_body(dark: bool, radius: u32, theme: &Theme) -> MemoryRenderBuffer {
+    let r_base = radius as f32;
+    let corner = radius as i32 + 2; // 13 px
+    let mid = 8;
+    let total_size = (corner * 2 + mid) as u32; // 34 px
+    let mut pm = tiny_skia::Pixmap::new(total_size, total_size).expect("body pixmap");
+
+    let bg = if dark {
+        [31.0, 31.0, 35.0, 255.0]
+    } else {
+        [250.0, 250.0, 252.0, 255.0]
+    };
+    let mut paint = tiny_skia::Paint::default();
+    paint.set_color_rgba8(bg[0] as u8, bg[1] as u8, bg[2] as u8, bg[3] as u8);
+    let path = round_rect(0.0, 0.0, total_size as f32, total_size as f32, r_base);
+    pm.fill_path(
+        &path,
+        &paint,
+        tiny_skia::FillRule::Winding,
+        tiny_skia::Transform::identity(),
+        None,
+    );
+
+    stroke_round(
+        &mut pm,
+        0.0,
+        0.0,
+        total_size as f32,
+        total_size as f32,
+        r_base,
+        theme.window_border(),
+        1.0,
+    );
+
+    MemoryRenderBuffer::from_slice(
+        pm.data(),
+        Fourcc::Abgr8888,
+        (total_size as i32, total_size as i32),
+        1,
+        Transform::Normal,
+        None,
+    )
+}
+
+fn build_ring(dark: bool, radius: u32, theme: &Theme) -> MemoryRenderBuffer {
+    let r_base = radius as f32;
+    let corner = radius as i32 + 2; // 13 px
+    let mid = 8;
+    let total_size = (corner * 2 + mid) as u32; // 34 px
+    let mut bpm = tiny_skia::Pixmap::new(total_size, total_size).expect("ring pixmap");
+    let border = theme.window_border();
+
+    let corner_mask_color = if dark {
+        [31u8, 31, 35, 255]
+    } else {
+        [250u8, 250, 252, 255]
+    };
+    let r_f = r_base;
+    // Bottom-left corner mask
+    {
+        let mut pb = tiny_skia::PathBuilder::new();
+        let bx = 0.0;
+        let by = total_size as f32 - r_f;
+        pb.move_to(bx, by);
+        pb.line_to(bx, by + r_f);
+        pb.line_to(bx + r_f, by + r_f);
+        pb.cubic_to(bx + r_f * (1.0 - 0.552_284_8), by + r_f, bx, by + r_f * 0.552_284_8, bx, by);
+        pb.close();
+        if let Some(p) = pb.finish() {
+            let mut paint = tiny_skia::Paint::default();
+            paint.set_color_rgba8(corner_mask_color[0], corner_mask_color[1], corner_mask_color[2], corner_mask_color[3]);
+            bpm.fill_path(&p, &paint, tiny_skia::FillRule::Winding, tiny_skia::Transform::identity(), None);
+        }
+    }
+    // Bottom-right corner mask
+    {
+        let mut pb = tiny_skia::PathBuilder::new();
+        let bx = total_size as f32 - r_f;
+        let by = total_size as f32 - r_f;
+        pb.move_to(bx + r_f, by);
+        pb.line_to(bx + r_f, by + r_f);
+        pb.line_to(bx, by + r_f);
+        pb.cubic_to(bx + r_f * 0.552_284_8, by + r_f, bx + r_f, by + r_f * 0.552_284_8, bx + r_f, by);
+        pb.close();
+        if let Some(p) = pb.finish() {
+            let mut paint = tiny_skia::Paint::default();
+            paint.set_color_rgba8(corner_mask_color[0], corner_mask_color[1], corner_mask_color[2], corner_mask_color[3]);
+            bpm.fill_path(&p, &paint, tiny_skia::FillRule::Winding, tiny_skia::Transform::identity(), None);
+        }
+    }
+
+    stroke_round(
+        &mut bpm,
+        0.5,
+        0.5,
+        total_size as f32 - 1.0,
+        total_size as f32 - 1.0,
+        r_base,
+        [border[0], border[1], border[2], border[3].min(70)],
+        1.0,
+    );
+
+    MemoryRenderBuffer::from_slice(
+        bpm.data(),
+        Fourcc::Abgr8888,
+        (total_size as i32, total_size as i32),
+        1,
+        Transform::Normal,
+        None,
+    )
+}
+
+fn build_shadow(_focused: bool, dark: bool, radius: u32) -> MemoryRenderBuffer {
+    let r_base = radius as f32;
+    let corner = SHADOW_PAD + r_base.ceil() as i32; // 33 px
+    let mid = 8;
+    let total_size = (corner * 2 + mid) as u32; // 74 px
+    let mut pm = tiny_skia::Pixmap::new(total_size, total_size).expect("shadow pixmap");
+
+    let shadow = if dark {
+        [0u8, 0, 0, 8]
+    } else {
+        [0u8, 0, 0, 5]
+    };
+
+    // Inner rect in 74x74 pixmap corresponds to (SHADOW_PAD, SHADOW_PAD) to (SHADOW_PAD + 30, SHADOW_PAD + 30)
+    let inner_w = (mid + 2 * r_base.ceil() as i32) as f32; // 30.0
+    let inner_h = inner_w;
+
+    for i in (0..12).rev() {
+        let grow = i as f32 * 1.2;
+        rounded(
+            &mut pm,
+            SHADOW_PAD as f32 - grow,
+            SHADOW_PAD as f32 - grow + 3.0,
+            inner_w + grow * 2.0,
+            inner_h + grow * 2.0,
+            r_base + grow,
+            shadow,
+        );
+    }
+
+    MemoryRenderBuffer::from_slice(
+        pm.data(),
+        Fourcc::Abgr8888,
+        (total_size as i32, total_size as i32),
         1,
         Transform::Normal,
         None,
