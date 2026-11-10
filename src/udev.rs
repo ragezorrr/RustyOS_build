@@ -52,6 +52,7 @@ pub struct DrmOutput {
     pub output: Output,
     pub damage_tracker: OutputDamageTracker,
     pub frame_pending: bool,
+    pub last_frame_queued: Option<std::time::Instant>,
     pub cursor_buffer: Option<DumbBuffer>,
 }
 
@@ -222,6 +223,7 @@ pub fn run_udev(
                             output,
                             damage_tracker,
                             frame_pending: false,
+                            last_frame_queued: None,
                             cursor_buffer,
                         },
                     );
@@ -294,6 +296,7 @@ pub fn run_udev(
                     if let Some(drm_out) = b.outputs.get_mut(&crtc) {
                         let _ = drm_out.surface.frame_submitted();
                         drm_out.frame_pending = false;
+                        drm_out.last_frame_queued = None;
 
                         if drm_out.output.current_mode().is_some() {
                             let time = data.state.start_time.elapsed();
@@ -378,7 +381,18 @@ pub fn run_udev(
             let UdevBackend { outputs, renderer } = &mut *b;
             for drm_out in outputs.values_mut() {
                 if drm_out.frame_pending {
-                    continue;
+                    // Safety check: if VBlank was dropped or delayed for >100ms, reset frame_pending
+                    // to prevent entire compositor freezing.
+                    if let Some(queued) = drm_out.last_frame_queued {
+                        if now.duration_since(queued).as_millis() > 100 {
+                            drm_out.frame_pending = false;
+                            drm_out.last_frame_queued = None;
+                        } else {
+                            continue;
+                        }
+                    } else {
+                        continue;
+                    }
                 }
 
                 if let Ok((mut dmabuf, _age)) = drm_out.surface.next_buffer() {
@@ -393,6 +407,7 @@ pub fn run_udev(
                     }
                     if drm_out.surface.queue_buffer(None, None, ()).is_ok() {
                         drm_out.frame_pending = true;
+                        drm_out.last_frame_queued = Some(now);
                     }
                 }
             }
@@ -409,10 +424,20 @@ pub fn run_udev(
     let backend_ping = backend.clone();
     handle.insert_source(redraw_source, move |_, _, data| {
         if let Ok(mut b) = backend_ping.try_borrow_mut() {
+            let now = std::time::Instant::now();
             let UdevBackend { outputs, renderer } = &mut *b;
             for drm_out in outputs.values_mut() {
                 if drm_out.frame_pending {
-                    continue;
+                    if let Some(queued) = drm_out.last_frame_queued {
+                        if now.duration_since(queued).as_millis() > 100 {
+                            drm_out.frame_pending = false;
+                            drm_out.last_frame_queued = None;
+                        } else {
+                            continue;
+                        }
+                    } else {
+                        continue;
+                    }
                 }
                 if let Ok((mut dmabuf, _age)) = drm_out.surface.next_buffer() {
                     if let Ok(mut target) = renderer.bind(&mut dmabuf) {
@@ -426,6 +451,7 @@ pub fn run_udev(
                     }
                     if drm_out.surface.queue_buffer(None, None, ()).is_ok() {
                         drm_out.frame_pending = true;
+                        drm_out.last_frame_queued = Some(now);
                     }
                 }
             }

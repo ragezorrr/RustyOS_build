@@ -425,6 +425,7 @@ impl Aqua {
         let Some(work) = self.work_area() else {
             return;
         };
+        let is_csd = crate::render::window_is_csd(window);
 
         if let Some((loc, size)) = self.maximized.remove(&key) {
             toplevel.with_pending_state(|state| {
@@ -432,38 +433,53 @@ impl Aqua {
                 state.size = Some(size);
             });
             let _ = toplevel.send_configure();
-            let current_loc = self.space.element_location(window).unwrap_or(loc);
-            self.window_animations.insert(
-                key,
-                (
-                    std::time::Instant::now(),
-                    std::time::Duration::from_millis(200),
-                    current_loc,
-                    loc,
-                ),
-            );
-            self.space.map_element(window.clone(), current_loc, true);
+
+            if is_csd {
+                self.space.map_element(window.clone(), loc, true);
+            } else {
+                let current_loc = self.space.element_location(window).unwrap_or(loc);
+                self.window_animations.insert(
+                    key,
+                    (
+                        std::time::Instant::now(),
+                        std::time::Duration::from_millis(200),
+                        current_loc,
+                        loc,
+                    ),
+                );
+                self.space.map_element(window.clone(), current_loc, true);
+            }
         } else {
             let current_loc = self.space.element_location(window).unwrap_or_else(|| Point::from((0, 0)));
             let size = window.geometry().size;
             self.maximized.insert(key, (current_loc, size));
+
             toplevel.with_pending_state(|state| {
                 state.states.set(smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Maximized);
-                let tb_h = crate::render::window_titlebar_h(window);
-                let client_h = (work.size.h - tb_h).max(100);
-                state.size = Some(smithay::utils::Size::from((work.size.w, client_h)));
+                if is_csd {
+                    state.size = Some(smithay::utils::Size::from((work.size.w, work.size.h)));
+                } else {
+                    let tb_h = crate::render::window_titlebar_h(window);
+                    let client_h = (work.size.h - tb_h).max(100);
+                    state.size = Some(smithay::utils::Size::from((work.size.w, client_h)));
+                }
             });
             let _ = toplevel.send_configure();
-            self.window_animations.insert(
-                key,
-                (
-                    std::time::Instant::now(),
-                    std::time::Duration::from_millis(200),
-                    current_loc,
-                    work.loc,
-                ),
-            );
-            self.space.map_element(window.clone(), current_loc, true);
+
+            if is_csd {
+                self.space.map_element(window.clone(), work.loc, true);
+            } else {
+                self.window_animations.insert(
+                    key,
+                    (
+                        std::time::Instant::now(),
+                        std::time::Duration::from_millis(200),
+                        current_loc,
+                        work.loc,
+                    ),
+                );
+                self.space.map_element(window.clone(), current_loc, true);
+            }
         }
     }
 }
