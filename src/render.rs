@@ -21,6 +21,7 @@ use smithay::{
         },
     },
     desktop::{layer_map_for_output, Window},
+    input::pointer::CursorImageSurfaceData,
     output::Output,
     utils::{Logical, Physical, Point, Rectangle, Scale, Size, Transform},
     wayland::{
@@ -796,7 +797,16 @@ pub fn render(
         let cursor_status = state.cursor_status.lock().ok().map(|s| s.clone());
         match cursor_status {
             Some(smithay::input::pointer::CursorImageStatus::Surface(ref surface)) => {
-                let loc_phys = Point::<f64, Logical>::from((pos.0, pos.1)).to_physical_precise_round(scale_s);
+                let hotspot = with_states(surface, |states| {
+                    states
+                        .data_map
+                        .get::<CursorImageSurfaceData>()
+                        .and_then(|attrs| attrs.lock().ok())
+                        .map(|attrs| attrs.hotspot)
+                        .unwrap_or_default()
+                });
+                let loc = Point::<f64, Logical>::from((pos.0 - hotspot.x as f64, pos.1 - hotspot.y as f64));
+                let loc_phys = loc.to_physical_precise_round(scale_s);
                 let surface_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
                     smithay::backend::renderer::element::surface::render_elements_from_surface_tree(
                         renderer,
@@ -1410,37 +1420,57 @@ fn stroke_round(
 fn _rect(_: Rectangle<i32, Logical>) {}
 
 fn default_cursor_buffer() -> MemoryRenderBuffer {
-    let mut pm = tiny_skia::Pixmap::new(24, 24).expect("cursor pixmap");
-    // Draw macOS-like sleek black & white cursor arrow
+    let mut pm = tiny_skia::Pixmap::new(32, 32).expect("cursor pixmap");
+
+    // Hotspot is at (1.0, 1.0) so the white outline is never clipped by the edge of the buffer.
+    let hx = 1.0;
+    let hy = 1.0;
+
     let mut pb = tiny_skia::PathBuilder::new();
-    pb.move_to(0.0, 0.0);
-    pb.line_to(0.0, 18.0);
-    pb.line_to(4.5, 13.5);
-    pb.line_to(8.0, 21.0);
-    pb.line_to(11.0, 19.5);
-    pb.line_to(7.5, 12.0);
-    pb.line_to(13.5, 12.0);
+    pb.move_to(hx, hy);
+    pb.line_to(hx, hy + 17.5);
+    pb.line_to(hx + 4.8, hy + 14.2);
+    pb.line_to(hx + 8.2, hy + 21.5);
+    pb.line_to(hx + 10.8, hy + 20.3);
+    pb.line_to(hx + 7.5, hy + 13.0);
+    pb.line_to(hx + 13.5, hy + 13.0);
     pb.close();
 
     if let Some(path) = pb.finish() {
-        // macOS cursor: white outline with sleek black fill
+        // 1. Soft macOS drop shadow
+        let mut shadow_paint = tiny_skia::Paint::default();
+        shadow_paint.set_color_rgba8(0, 0, 0, 48);
+        let shadow_transform = tiny_skia::Transform::from_translate(0.8, 1.6);
+        let shadow_stroke = tiny_skia::Stroke {
+            width: 2.2,
+            line_cap: tiny_skia::LineCap::Round,
+            line_join: tiny_skia::LineJoin::Round,
+            ..Default::default()
+        };
+        pm.stroke_path(&path, &shadow_paint, &shadow_stroke, shadow_transform, None);
+        pm.fill_path(&path, &shadow_paint, tiny_skia::FillRule::Winding, shadow_transform, None);
+
+        // 2. Crisp outer white border
         let mut stroke_paint = tiny_skia::Paint::default();
         stroke_paint.set_color_rgba8(255, 255, 255, 255);
         let stroke = tiny_skia::Stroke {
-            width: 2.0,
+            width: 1.6,
+            line_cap: tiny_skia::LineCap::Round,
+            line_join: tiny_skia::LineJoin::Round,
             ..Default::default()
         };
         pm.stroke_path(&path, &stroke_paint, &stroke, tiny_skia::Transform::identity(), None);
 
+        // 3. Sleek macOS dark fill
         let mut fill_paint = tiny_skia::Paint::default();
-        fill_paint.set_color_rgba8(16, 16, 20, 255);
+        fill_paint.set_color_rgba8(18, 18, 22, 255);
         pm.fill_path(&path, &fill_paint, tiny_skia::FillRule::Winding, tiny_skia::Transform::identity(), None);
     }
 
     MemoryRenderBuffer::from_slice(
         pm.data(),
         Fourcc::Abgr8888,
-        (24, 24),
+        (32, 32),
         1,
         Transform::Normal,
         None,

@@ -173,27 +173,44 @@ pub fn run_udev(
                         let pitch = dumb.pitch() as usize;
                         if let Ok(mut map) = drm_fd.map_dumb_buffer(&mut dumb) {
                             let mut pm = tiny_skia::Pixmap::new(64, 64).expect("cursor pm");
+                            let hx = 1.0;
+                            let hy = 1.0;
+
                             let mut pb = tiny_skia::PathBuilder::new();
-                            pb.move_to(0.0, 0.0);
-                            pb.line_to(0.0, 18.0);
-                            pb.line_to(4.5, 13.5);
-                            pb.line_to(8.0, 21.0);
-                            pb.line_to(11.0, 19.5);
-                            pb.line_to(7.5, 12.0);
-                            pb.line_to(13.5, 12.0);
+                            pb.move_to(hx, hy);
+                            pb.line_to(hx, hy + 17.5);
+                            pb.line_to(hx + 4.8, hy + 14.2);
+                            pb.line_to(hx + 8.2, hy + 21.5);
+                            pb.line_to(hx + 10.8, hy + 20.3);
+                            pb.line_to(hx + 7.5, hy + 13.0);
+                            pb.line_to(hx + 13.5, hy + 13.0);
                             pb.close();
 
                             if let Some(path) = pb.finish() {
+                                let mut shadow_paint = tiny_skia::Paint::default();
+                                shadow_paint.set_color_rgba8(0, 0, 0, 48);
+                                let shadow_transform = tiny_skia::Transform::from_translate(0.8, 1.6);
+                                let shadow_stroke = tiny_skia::Stroke {
+                                    width: 2.2,
+                                    line_cap: tiny_skia::LineCap::Round,
+                                    line_join: tiny_skia::LineJoin::Round,
+                                    ..Default::default()
+                                };
+                                pm.stroke_path(&path, &shadow_paint, &shadow_stroke, shadow_transform, None);
+                                pm.fill_path(&path, &shadow_paint, tiny_skia::FillRule::Winding, shadow_transform, None);
+
                                 let mut stroke_paint = tiny_skia::Paint::default();
                                 stroke_paint.set_color_rgba8(255, 255, 255, 255);
                                 let stroke = tiny_skia::Stroke {
-                                    width: 2.0,
+                                    width: 1.6,
+                                    line_cap: tiny_skia::LineCap::Round,
+                                    line_join: tiny_skia::LineJoin::Round,
                                     ..Default::default()
                                 };
                                 pm.stroke_path(&path, &stroke_paint, &stroke, tiny_skia::Transform::identity(), None);
 
                                 let mut fill_paint = tiny_skia::Paint::default();
-                                fill_paint.set_color_rgba8(16, 16, 20, 255);
+                                fill_paint.set_color_rgba8(18, 18, 22, 255);
                                 pm.fill_path(&path, &fill_paint, tiny_skia::FillRule::Winding, tiny_skia::Transform::identity(), None);
                             }
 
