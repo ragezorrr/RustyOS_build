@@ -1476,8 +1476,8 @@ pub fn squircle_path(x: f32, y: f32, w: f32, h: f32, r: f32) -> tiny_skia::Path 
             if rev {
                 t = hp - t;
             }
-            let px = cx + sx * a * t.cos().powf(e);
-            let py = cy + sy * a * t.sin().powf(e);
+            let px = cx + sx * a * t.cos().max(0.0).powf(e);
+            let py = cy + sy * a * t.sin().max(0.0).powf(e);
             if first {
                 pb.move_to(px, py);
                 first = false;
