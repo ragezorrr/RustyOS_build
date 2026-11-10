@@ -204,7 +204,7 @@ pub fn render(
     framebuffer: &mut GlesTarget<'_>,
     output: &Output,
     damage_tracker: &mut OutputDamageTracker,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<bool, Box<dyn std::error::Error>> {
     let geometry = state
         .space
         .output_geometry(output)
@@ -727,8 +727,9 @@ pub fn render(
     // (it renders the list reversed), while we built it bottom-to-top.
     elements.reverse();
 
-    damage_tracker.render_output(renderer, framebuffer, 0, &elements, clear)?;
-    Ok(())
+    let res = damage_tracker.render_output(renderer, framebuffer, 0, &elements, clear)?;
+    let has_damage = res.damage.map_or(false, |d| !d.is_empty());
+    Ok(has_damage)
 }
 
 fn running_apps(windows: &[Window]) -> [bool; 6] {

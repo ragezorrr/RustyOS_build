@@ -10,7 +10,7 @@ description: >-
   "окна", "лаги", "оптимизируй". Use even if the user doesn't name the project.
 ---
 
-# Aqua: Wayland compositor (Rust + Smithay)
+# Aqua: Wayland compositor (Rust + Smithay), macOS 26 Tahoe look
 
 Stack: Smithay (compositor), tiny-skia (CPU 2D), fontdue (text), winit (nested
 dev backend). Repo root = current working directory (never assume an absolute path).
@@ -97,10 +97,11 @@ Everything is rasterized by tiny-skia on the CPU. Rules:
   interruptible, preserving velocity. Linear only for fade-out of opacity.
   Never linear for position/size.
 
-## 4a. Visual rules (macOS Sequoia look)
+## 4a. Visual rules (macOS 26 Tahoe / Liquid Glass)
 
-For any UI/visual task read `references/design.md` (glass recipe, shapes,
-dock, traffic lights, motion). Hard rules:
+For any UI/visual task read `references/design.md` (gap analysis, shapes,
+glass recipe, wallpaper, dock, icons, dialogs, motion). If the user says
+"make it look like macOS", follow its "Redesign order" one step at a time. Hard rules:
 - ALL colors go through `theme.rs` with dark and light variants. Never hardcode.
 - Sizes/colors: read constants in code (`PANEL_H`, `DOCK_MARGIN`, `DOCK_HEADROOM`,
   `ICON`, `TITLEBAR_H`, `SHADOW_PAD`), don't trust remembered numbers.
@@ -127,8 +128,15 @@ in `render.rs` when open, intercept clicks in `input.rs` before shell hit-test.
 | Minimized app not restored | `minimized_windows` lookup in dock click handler |
 | Double frame on GTK/Electron | compositor forcing SSD over CSD client |
 | Windows drift when tiled/maximized | using buffer size instead of `geometry()` |
+| Icons/dock look like a diamond, not round | broken corner curve in `squircle_path` (`ui.rs`); use superellipse version from design.md |
+| Dock looks like a dark box | opaque tint, no blurred wallpaper under it, flat wallpaper |
 | Lag during drag/animation | per-frame rasterization; see section 4 |
 | Black screen at start | output setup in `winit.rs` |
+
+## 6a. Reference compositors
+
+For "how does cosmic-comp/niri/anvil do X": read `references/reference-compositors.md`
+(paths in `~/ref`, `rg` queries, GPL rules). Study first, then implement; never copy GPL code.
 
 ## 7. Audit workflow ("fix all issues")
 

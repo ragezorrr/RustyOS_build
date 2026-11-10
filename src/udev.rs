@@ -47,11 +47,18 @@ use smithay::{
 
 use crate::{CalloopData, Aqua};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DrmOutputState {
+    #[default]
+    Idle,
+    WaitingForVBlank { redraw_needed: bool },
+}
+
 pub struct DrmOutput {
     pub surface: GbmBufferedSurface<GbmAllocator<DrmDeviceFd>, ()>,
     pub output: Output,
     pub damage_tracker: OutputDamageTracker,
-    pub frame_pending: bool,
+    pub state: DrmOutputState,
     pub last_frame_queued: Option<std::time::Instant>,
     pub cursor_buffer: Option<DumbBuffer>,
 }
@@ -223,7 +230,7 @@ pub fn run_udev(
                             surface: gbm_surface,
                             output,
                             damage_tracker,
-                            frame_pending: false,
+                            state: DrmOutputState::Idle,
                             last_frame_queued: None,
                             cursor_buffer,
                         },
@@ -281,7 +288,7 @@ pub fn run_udev(
                 tracing::info!("Session activated (VT switched back)");
                 if let Ok(mut b) = backend_session.try_borrow_mut() {
                     for drm_out in b.outputs.values_mut() {
-                        drm_out.frame_pending = false;
+                        drm_out.state = DrmOutputState::Idle;
                         drm_out.surface.reset_buffers();
                     }
                 }
@@ -295,9 +302,15 @@ pub fn run_udev(
         match event {
             DrmEvent::VBlank(crtc) => {
                 if let Ok(mut b) = backend_drm.try_borrow_mut() {
-                    if let Some(drm_out) = b.outputs.get_mut(&crtc) {
+                    let now = std::time::Instant::now();
+                    let UdevBackend { outputs, renderer } = &mut *b;
+                    if let Some(drm_out) = outputs.get_mut(&crtc) {
                         let _ = drm_out.surface.frame_submitted();
-                        drm_out.frame_pending = false;
+                        let redraw_needed = match drm_out.state {
+                            DrmOutputState::WaitingForVBlank { redraw_needed } => redraw_needed,
+                            DrmOutputState::Idle => false,
+                        };
+                        drm_out.state = DrmOutputState::Idle;
                         drm_out.last_frame_queued = None;
 
                         if drm_out.output.current_mode().is_some() {
@@ -312,8 +325,16 @@ pub fn run_udev(
                                 );
                             });
                         }
+
+                        // If redraw was requested while waiting for VBlank, re-render immediately
+                        if redraw_needed {
+                            render_output(drm_out, renderer, &mut data.state, now);
+                        }
                     }
                 }
+                data.state.space.refresh();
+                data.state.popups.cleanup();
+                let _ = data.display_handle.flush_clients();
             }
             DrmEvent::Error(err) => {
                 tracing::error!(?err, "DRM event error");
@@ -321,7 +342,7 @@ pub fn run_udev(
         }
     })?;
 
-    // 60 FPS Render loop timer
+    // 60 FPS timer: handles client frame callbacks, window animations and flush
     let backend_render = backend.clone();
     let timer = Timer::immediate();
     handle.insert_source(timer, move |_deadline, _, data| {
@@ -378,40 +399,24 @@ pub fn run_udev(
             data.state.deco.remove(key);
         }
 
-        // 3. Render all outputs
+        // Send frame callbacks to waiting clients on timer tick so client pacing stays smooth
+        let time = data.state.start_time.elapsed();
+        for window in data.state.space.elements() {
+            for output in data.state.space.outputs_for_element(window) {
+                window.send_frame(
+                    &output,
+                    time,
+                    Some(Duration::ZERO),
+                    |_, _| Some(output.clone()),
+                );
+            }
+        }
+
+        // Check outputs: if idle, render next frame or mark redraw
         if let Ok(mut b) = backend_render.try_borrow_mut() {
             let UdevBackend { outputs, renderer } = &mut *b;
             for drm_out in outputs.values_mut() {
-                if drm_out.frame_pending {
-                    // Safety check: if VBlank was dropped or delayed for >100ms, reset frame_pending
-                    // to prevent entire compositor freezing.
-                    if let Some(queued) = drm_out.last_frame_queued {
-                        if now.duration_since(queued).as_millis() > 100 {
-                            drm_out.frame_pending = false;
-                            drm_out.last_frame_queued = None;
-                        } else {
-                            continue;
-                        }
-                    } else {
-                        continue;
-                    }
-                }
-
-                if let Ok((mut dmabuf, _age)) = drm_out.surface.next_buffer() {
-                    if let Ok(mut target) = renderer.bind(&mut dmabuf) {
-                        let _ = crate::render::render(
-                            &mut data.state,
-                            renderer,
-                            &mut target,
-                            &drm_out.output,
-                            &mut drm_out.damage_tracker,
-                        );
-                    }
-                    if drm_out.surface.queue_buffer(None, None, ()).is_ok() {
-                        drm_out.frame_pending = true;
-                        drm_out.last_frame_queued = Some(now);
-                    }
-                }
+                render_output(drm_out, renderer, &mut data.state, now);
             }
         }
 
@@ -429,35 +434,13 @@ pub fn run_udev(
             let now = std::time::Instant::now();
             let UdevBackend { outputs, renderer } = &mut *b;
             for drm_out in outputs.values_mut() {
-                if drm_out.frame_pending {
-                    if let Some(queued) = drm_out.last_frame_queued {
-                        if now.duration_since(queued).as_millis() > 100 {
-                            drm_out.frame_pending = false;
-                            drm_out.last_frame_queued = None;
-                        } else {
-                            continue;
-                        }
-                    } else {
-                        continue;
-                    }
-                }
-                if let Ok((mut dmabuf, _age)) = drm_out.surface.next_buffer() {
-                    if let Ok(mut target) = renderer.bind(&mut dmabuf) {
-                        let _ = crate::render::render(
-                            &mut data.state,
-                            renderer,
-                            &mut target,
-                            &drm_out.output,
-                            &mut drm_out.damage_tracker,
-                        );
-                    }
-                    if drm_out.surface.queue_buffer(None, None, ()).is_ok() {
-                        drm_out.frame_pending = true;
-                        drm_out.last_frame_queued = Some(now);
-                    }
-                }
+                render_output(drm_out, renderer, &mut data.state, now);
             }
         }
+
+        data.state.space.refresh();
+        data.state.popups.cleanup();
+        let _ = data.display_handle.flush_clients();
     })?;
 
     tracing::info!("Native DRM/udev event loop running");
@@ -465,4 +448,59 @@ pub fn run_udev(
     event_loop.run(None, &mut data, move |_| {})?;
 
     Ok(())
+}
+
+fn render_output(
+    drm_out: &mut DrmOutput,
+    renderer: &mut GlesRenderer,
+    state: &mut Aqua,
+    now: std::time::Instant,
+) {
+    if let DrmOutputState::WaitingForVBlank { ref mut redraw_needed } = drm_out.state {
+        // Safety check: if VBlank was dropped or delayed for >100ms, reset to Idle
+        if let Some(queued) = drm_out.last_frame_queued {
+            if now.duration_since(queued).as_millis() > 100 {
+                drm_out.state = DrmOutputState::Idle;
+                drm_out.last_frame_queued = None;
+            } else {
+                // Currently waiting for VBlank: mark that redraw is needed when VBlank arrives
+                *redraw_needed = true;
+                return;
+            }
+        } else {
+            *redraw_needed = true;
+            return;
+        }
+    }
+
+    if let Ok((mut dmabuf, _age)) = drm_out.surface.next_buffer() {
+        let render_res = if let Ok(mut target) = renderer.bind(&mut dmabuf) {
+            crate::render::render(
+                state,
+                renderer,
+                &mut target,
+                &drm_out.output,
+                &mut drm_out.damage_tracker,
+            )
+        } else {
+            return;
+        };
+
+        match render_res {
+            Ok(has_damage) => {
+                if has_damage {
+                    if drm_out.surface.queue_buffer(None, None, ()).is_ok() {
+                        drm_out.state = DrmOutputState::WaitingForVBlank { redraw_needed: false };
+                        drm_out.last_frame_queued = Some(now);
+                    }
+                } else {
+                    // No damage: do not queue buffer to DRM plane
+                    drm_out.state = DrmOutputState::Idle;
+                }
+            }
+            Err(_) => {
+                drm_out.state = DrmOutputState::Idle;
+            }
+        }
+    }
 }
